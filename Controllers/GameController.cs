@@ -1,23 +1,14 @@
 using Microsoft.AspNetCore.Mvc;
-using System.Collections.Generic;
-using NerdHub.Models;
+using MongoDB.Driver;
 
-namespace NerdHub.Controllers
+public class GameController : ControllerBase
 {
-    [ApiController]
-    [Route("[controller]")]
-    public class GamesController : ControllerBase
-    {
-        [HttpGet]
-        public IEnumerable<Game> Get()
-        {
-            var games = new List<Game>
-            {
-                new Game { Id = "1", Name = "Game 1", Description = "Description 1" },
-                new Game { Id = "2", Name = "Game 2", Description = "Description 2" }
-            };
+    private readonly IMongoDatabase _database;
 
-            return games;
-        }
+    public GameController(IMongoClient client)
+    {
+        _database = client.GetDatabase("GameDatabase");
     }
+
+    // Your action methods go here
 }
