@@ -1,0 +1,6 @@
+@NerdHub_Backend_HostAddress = http://localhost:5172
+
+GET {{NerdHub_Backend_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
