@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <RootNamespace>NerdHub_Backend</RootNamespace>
+    <RootNamespace>NerdHub</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
