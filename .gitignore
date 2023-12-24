@@ -356,3 +356,6 @@ FodyWeavers.xsd
 
 # Local History for Visual Studio Code
 .history/
+
+# Ignore appsettings.json for API key / connection string secrets
+appsettings.json
