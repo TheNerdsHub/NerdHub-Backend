@@ -1,28 +1,21 @@
-using SteamWebAPI2.Interfaces;
-using SteamWebAPI2.Utilities;
-using System.Net.Http;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Configuration;
+using NerdHub.Models;
+using MongoDB.Driver;
+
 
 namespace NerdHub.Services
 {
     public class SteamService
     {
         private readonly IConfiguration _configuration;
+        private readonly IMongoCollection<Game> _games;
 
-        public SteamService(IConfiguration configuration)
+        public SteamService(IConfiguration configuration, IMongoClient client)
         {
             _configuration = configuration;
+
+            var database = client.GetDatabase("NerdHub-Games");
+            _games = database.GetCollection<Game>("games");
         }
 
-        public async Task<string> GetPlayerNickname()
-        {
-            var apiKey = _configuration["Steam:ApiKey"];
-            var webInterfaceFactory = new SteamWebInterfaceFactory(apiKey);
-            var steamUser = webInterfaceFactory.CreateSteamWebInterface<SteamUserWebAPIInterface>(new HttpClient());
-            var steamId = new SteamID(76561197960435530);
-            var playerSummaryResponse = await steamUser.GetPlayerSummaryAsync(steamId);
-            return playerSummaryResponse.Data.Nickname;
-        }
     }
 }
