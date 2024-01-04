@@ -1,8 +1,6 @@
 using NerdHub.Models;
 using MongoDB.Driver;
 using Newtonsoft.Json;
-using System.Collections.Generic;
-using System.Linq;
 namespace NerdHub.Services
 {
     public class SteamService
