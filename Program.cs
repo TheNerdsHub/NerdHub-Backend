@@ -1,17 +1,22 @@
 using MongoDB.Driver;
+using NerdHub.Services; // Add this to include the SteamService namespace
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// Register MongoDB client
 builder.Services.AddSingleton<IMongoClient, MongoClient>(sp =>
 {
     var connectionString = sp.GetRequiredService<IConfiguration>()["MongoDB:ConnectionString"];
     return new MongoClient(connectionString);
 });
+
+// Register SteamService
+builder.Services.AddScoped<SteamService>();
 
 var app = builder.Build();
 
@@ -23,5 +28,6 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
-
+app.UseAuthorization();
+app.MapControllers();
 app.Run();

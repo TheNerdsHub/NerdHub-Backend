@@ -30,6 +30,7 @@ namespace NerdHub.Controllers
             try
             {
                 await _steamService.UpdateOwnedGames(steamId);
+                // Return information about the response
                 return Ok("Owned games updated successfully.");
             }
             catch (Exception ex)

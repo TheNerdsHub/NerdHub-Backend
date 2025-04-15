@@ -2,13 +2,14 @@ using NerdHub.Models;
 using MongoDB.Driver;
 using Newtonsoft.Json;
 using Microsoft.Extensions.Logging;
+using MongoDB.Bson.Serialization;
 
 namespace NerdHub.Services
 {
     public class SteamService
     {
         private readonly IConfiguration _configuration;
-        private readonly IMongoCollection<Game> _games;
+        private readonly IMongoCollection<GameDetails> _games;
         private readonly ILogger<SteamService> _logger;
 
         public SteamService(IConfiguration configuration, IMongoClient client, ILogger<SteamService> logger)
@@ -16,8 +17,39 @@ namespace NerdHub.Services
             _configuration = configuration;
             _logger = logger;
 
-            var database = client.GetDatabase("NerdHub-Games");
-            _games = database.GetCollection<Game>("games");
+            var database = client.GetDatabase("NH-Games");
+            _games = database.GetCollection<GameDetails>("games");
+        }
+
+        private async Task<string> FetchWithRetryAsync(HttpClient httpClient, string url, int maxRetries = 15)
+        {
+            int retryCount = 0;
+            while (retryCount < maxRetries)
+            {
+                var response = await httpClient.GetAsync(url);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    return await response.Content.ReadAsStringAsync();
+                }
+                else if ((int)response.StatusCode == 429) // Too Many Requests
+                {
+                    retryCount++;
+                    var retryAfter = response.Headers.RetryAfter?.Delta?.TotalSeconds ?? Math.Pow(2, retryCount) * 60; // Exponential backoff in minutes
+
+                    // Log a warning about the retry
+                    // ADD THE TIMESTAMP TO THE LOG MESSAGE
+                    _logger.LogWarning("Rate limit hit. Retrying request to {Url}. Retry count: {RetryCount}. Waiting for {RetryAfter} seconds.", url, retryCount, retryAfter);
+
+                    await Task.Delay(TimeSpan.FromSeconds(retryAfter));
+                }
+                else
+                {
+                    response.EnsureSuccessStatusCode(); // Throw exception for other non-success status codes
+                }
+            }
+
+            throw new HttpRequestException($"Failed to fetch data from {url} after {maxRetries} retries due to rate limiting.");
         }
 
         public async Task UpdateOwnedGames(string steamId)
@@ -27,51 +59,93 @@ namespace NerdHub.Services
                 var httpClient = new HttpClient();
                 var steamApiKey = _configuration["Steam:ApiKey"];
 
-                var response = await httpClient.GetStringAsync($"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={steamApiKey}&steamid={steamId}&format=json");
+                // Get the list of owned games
+                var response = await FetchWithRetryAsync(httpClient, $"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={steamApiKey}&steamid={steamId}&format=json");
 
-                var games = JsonConvert.DeserializeObject<List<Game>>(response);
-
-                if (games != null)
+                // Deserialize the JSON response into the wrapper class
+                var apiResponse = JsonConvert.DeserializeObject<SteamApiResponse>(response, new JsonSerializerSettings
                 {
-                    foreach (Game game in games)
+                    NullValueHandling = NullValueHandling.Ignore,
+                    MissingMemberHandling = MissingMemberHandling.Ignore
+                });
+
+                if (apiResponse?.response?.games != null)
+                {
+                    var gameDetailsList = new List<WriteModel<GameDetails>>();
+
+                    foreach (var game in apiResponse.response.games)
                     {
-                        var gameDataResponse = await httpClient.GetStringAsync($"http://store.steampowered.com/api/appdetails?appids={game.steam_appid}&l=english");
-                        var gameData = JsonConvert.DeserializeObject<Game>(gameDataResponse);
-
-                        if (gameData != null)
+                        try
                         {
-                            if (gameData.genres != null)
-                            {
-                                gameData.genres = gameData.genres.Select(genre => new Genre { description = genre.description }).ToList();
-                            }
+                            // Fetch game details for each game with retry logic
+                            var gameDataResponse = await FetchWithRetryAsync(httpClient, $"http://store.steampowered.com/api/appdetails?appids={game.steam_appid}&l=english");
 
-                            if (gameData.categories != null)
+                            // Deserialize the JSON response into a dictionary
+                            var gameDataDictionary = JsonConvert.DeserializeObject<Dictionary<string, GameDetailsResponse>>(gameDataResponse, new JsonSerializerSettings
                             {
-                                gameData.categories = gameData.categories.Select(category => new Category { description = category.description }).ToList();
-                            }
+                                NullValueHandling = NullValueHandling.Ignore,
+                                MissingMemberHandling = MissingMemberHandling.Ignore
+                            });
 
-                            var existingGame = _games.FindSync(g => g.steam_appid == game.steam_appid).FirstOrDefault();
-
-                            if (existingGame == null)
+                            if (gameDataDictionary != null && gameDataDictionary.TryGetValue(game.steam_appid.ToString(), out var gameDetailsResponse) && gameDetailsResponse.success)
                             {
-                                _games.InsertOne(gameData);
-                            }
-                            else
-                            {
-                                if (!existingGame.SteamID.Contains(steamId))
+                                // Map the game details to the GameDetails model
+                                var gameDetails = new GameDetails
                                 {
-                                    existingGame.SteamID.Add(steamId);
-                                    var update = Builders<Game>.Update.Set(g => g.SteamID, existingGame.SteamID);
-                                    _games.UpdateOne(g => g.steam_appid == existingGame.steam_appid, update);
-                                }
+                                    appid = game.steam_appid, // Use steam_appid as the MongoDB document ID
+                                    name = gameDetailsResponse.data?.name,
+                                    shortDescription = gameDetailsResponse.data?.shortDescription,
+                                    developers = gameDetailsResponse.data?.developers,
+                                    publishers = gameDetailsResponse.data?.publishers,
+                                    priceOverview = gameDetailsResponse.data?.priceOverview,
+                                    releaseDate = gameDetailsResponse.data?.releaseDate,
+                                    genres = gameDetailsResponse.data?.genres,
+                                    platforms = gameDetailsResponse.data?.platforms,
+                                    headerImage = gameDetailsResponse.data?.headerImage,
+                                    capsuleImage = gameDetailsResponse.data?.capsuleImage,
+                                    capsuleImagev5 = gameDetailsResponse.data?.capsuleImagev5,
+                                    website = gameDetailsResponse.data?.website,
+                                    pcRequirements = gameDetailsResponse.data?.pcRequirements,
+                                    macRequirements = gameDetailsResponse.data?.macRequirements,
+                                    linuxRequirements = gameDetailsResponse.data?.linuxRequirements,
+                                    dlc = gameDetailsResponse.data?.dlc,
+                                    isFree = gameDetailsResponse.data?.isFree,
+                                    controllerSupport = gameDetailsResponse.data?.controllerSupport,
+                                    requiredAge = gameDetailsResponse.data?.requiredAge,
+                                    packages = gameDetailsResponse.data?.packages,
+                                    screenshots = gameDetailsResponse.data?.screenshots,
+                                    movies = gameDetailsResponse.data?.movies,
+                                    achievements = gameDetailsResponse.data?.achievements,
+                                    recommendations = gameDetailsResponse.data?.recommendations,
+                                    categories = gameDetailsResponse.data?.categories,
+                                    supportedLanguages = gameDetailsResponse.data?.supportedLanguages,
+                                    metacritic = gameDetailsResponse.data?.metacritic
+                                };
+
+                                // Create an upsert operation
+                                var filter = Builders<GameDetails>.Filter.Eq(g => g.appid, gameDetails.appid);
+                                var update = new ReplaceOneModel<GameDetails>(filter, gameDetails) { IsUpsert = true };
+                                gameDetailsList.Add(update);
                             }
                         }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to fetch details for game {AppId}", game.steam_appid);
+                        }
+                    }
+
+                    // Perform a bulk write operation to MongoDB
+                    if (gameDetailsList.Count > 0)
+                    {
+                        await _games.BulkWriteAsync(gameDetailsList);
+                        _logger.LogInformation("Upserted {Count} game details into the database.", gameDetailsList.Count);
                     }
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "An error occurred while updating owned games for Steam ID {SteamId}", steamId);
+                throw;
             }
         }
     }

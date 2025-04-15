@@ -1,17 +1,31 @@
-using MongoDB.Bson.Serialization.Attributes;
+using Newtonsoft.Json;
 
 namespace NerdHub.Models
 {
-    [BsonIgnoreExtraElements]
     public class Game
     {
-        [BsonId]
+        [JsonProperty("appid")]
         public int steam_appid { get; set; }
-        public string? name { get; set; }
-        public string? header_image { get; set; }
-        public string? detailed_description { get; set; }
-        public List<Category> categories { get; set; } = new List<Category>();
-        public List<Genre> genres { get; set; } = new List<Genre>();
-        public List<string> SteamID { get; set; } = new List<string>();
+
+        [JsonProperty("playtime_forever")]
+        public int playtime_forever { get; set; }
+
+        [JsonProperty("playtime_windows_forever")]
+        public int playtime_windows_forever { get; set; }
+
+        [JsonProperty("playtime_mac_forever")]
+        public int playtime_mac_forever { get; set; }
+
+        [JsonProperty("playtime_linux_forever")]
+        public int playtime_linux_forever { get; set; }
+
+        [JsonProperty("playtime_deck_forever")]
+        public int playtime_deck_forever { get; set; }
+
+        [JsonProperty("rtime_last_played")]
+        public int rtime_last_played { get; set; }
+
+        [JsonProperty("playtime_disconnected")]
+        public int playtime_disconnected { get; set; }
     }
 }
