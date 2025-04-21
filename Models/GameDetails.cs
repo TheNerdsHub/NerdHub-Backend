@@ -1,17 +1,37 @@
 using Newtonsoft.Json;
+using MongoDB.Bson.Serialization.Attributes;
+using MongoDB.Bson;
 
 namespace NerdHub.Models
 {
     public class GameDetails
     {
+        [BsonId]
+        [BsonRepresentation(BsonType.ObjectId)]
+        [JsonProperty("_id")]
+        public string? Id { get; set; }
+
         [JsonProperty("type")]
         public string? type { get; set; }
 
         [JsonProperty("name")]
         public string? name { get; set; }
 
+        private int? _appid;
+
         [JsonProperty("steam_appid")]
-        public int appid { get; set; }
+        public int? steam_appid
+        {
+            get => _appid;
+            set => _appid = value;
+        }
+
+        [JsonProperty("appid")]
+        public int? appid
+        {
+            get => _appid;
+            set => _appid = value;
+        }
 
         [JsonProperty("required_age")]
         public int? requiredAge { get; set; }
@@ -129,6 +149,40 @@ namespace NerdHub.Models
 
         [JsonProperty("ratings")]
         public Ratings? ratings { get; set; }
+
+        [JsonProperty("LastModifiedTime")]
+        public DateTime LastModifiedTime { get; set; } = DateTime.UtcNow;
+
+        [JsonProperty("owned_by")]
+        public List<OwnedBy>? ownedBy { get; set; } = new List<OwnedBy>();
+
+        [JsonProperty("playtime_forever")]
+        public int playtime_forever { get; set; }
+
+        [JsonProperty("playtime_windows_forever")]
+        public int playtime_windows_forever { get; set; }
+
+        [JsonProperty("playtime_mac_forever")]
+        public int playtime_mac_forever { get; set; }
+
+        [JsonProperty("playtime_linux_forever")]
+        public int playtime_linux_forever { get; set; }
+
+        [JsonProperty("playtime_deck_forever")]
+        public int playtime_deck_forever { get; set; }
+
+        [JsonProperty("rtime_last_played")]
+        public int rtime_last_played { get; set; }
+
+        [JsonProperty("playtime_disconnected")]
+        public int playtime_disconnected { get; set; }
+    }
+    public class OwnedBy {
+        [JsonProperty("steam")]
+        public List<long>? steamId { get; set; }
+
+        [JsonProperty("epic")]
+        public List<int>? epicId { get; set; }
     }
     public class FullGame
     {

@@ -15,6 +15,6 @@ namespace NerdHub.Models
         public int gameCount { get; set; }
 
         [JsonProperty("games")]
-        public List<Game> games { get; set; } = new List<Game>();
+        public List<GameDetails> games { get; set; } = new List<GameDetails>();
     }
 }
