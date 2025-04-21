@@ -1,7 +1,15 @@
+using DotNetEnv;
 using MongoDB.Driver;
-using NerdHub.Services; // Add this to include the SteamService namespace
+using NerdHub.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Load environment variables from .env
+DotNetEnv.Env.Load();
+
+// Override configuration with .env values
+builder.Configuration["MongoDB:ConnectionString"] = Environment.GetEnvironmentVariable("MONGODB_CONNECTION_STRING");
+builder.Configuration["Steam:ApiKey"] = Environment.GetEnvironmentVariable("STEAM_API_KEY");
 
 // Add services to the container.
 builder.Services.AddControllers();
