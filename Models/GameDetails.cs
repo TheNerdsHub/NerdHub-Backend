@@ -151,29 +151,36 @@ namespace NerdHub.Models
         public Ratings? ratings { get; set; }
 
         [JsonProperty("LastModifiedTime")]
-        public DateTime LastModifiedTime { get; set; } = DateTime.UtcNow;
+        public string LastModifiedTime { get; set; } = DateTime.UtcNow.ToString("o");
 
         [JsonProperty("owned_by")]
         public List<OwnedBy>? ownedBy { get; set; } = new List<OwnedBy>();
 
+        [BsonIgnore]
         [JsonProperty("playtime_forever")]
         public int playtime_forever { get; set; }
 
+        [BsonIgnore]
         [JsonProperty("playtime_windows_forever")]
         public int playtime_windows_forever { get; set; }
 
+        [BsonIgnore]
         [JsonProperty("playtime_mac_forever")]
         public int playtime_mac_forever { get; set; }
 
+        [BsonIgnore]
         [JsonProperty("playtime_linux_forever")]
         public int playtime_linux_forever { get; set; }
 
+        [BsonIgnore]
         [JsonProperty("playtime_deck_forever")]
         public int playtime_deck_forever { get; set; }
 
+        [BsonIgnore]
         [JsonProperty("rtime_last_played")]
         public int rtime_last_played { get; set; }
 
+        [BsonIgnore]
         [JsonProperty("playtime_disconnected")]
         public int playtime_disconnected { get; set; }
     }

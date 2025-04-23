@@ -29,54 +29,68 @@ namespace NerdHub.Services
 
             while (retryCount < maxRetries)
             {
-                await _rateLimitSemaphore.WaitAsync(); // Acquire a slot for the request
+                await _rateLimitSemaphore.WaitAsync();
                 try
                 {
-                    // Wait for the rate limit delay to ensure we don't exceed the limit
                     await Task.Delay(_rateLimitDelay);
-
                     var response = await httpClient.GetAsync(url);
 
                     if (response.IsSuccessStatusCode)
-                    {
                         return await response.Content.ReadAsStringAsync();
-                    }
-                    else if ((int)response.StatusCode == 429) // Too Many Requests
+
+                    if ((int)response.StatusCode == 429) // Too Many Requests
                     {
                         retryCount++;
-                        var retryAfter = response.Headers.RetryAfter?.Delta?.TotalSeconds ?? Math.Pow(2, retryCount); // Exponential backoff
-                        _logger.LogWarning("Rate limit hit at {Timestamp}. Retrying request to {Url}. Retry count: {RetryCount}. Waiting for {RetryAfter} seconds.", DateTime.UtcNow, url, retryCount, retryAfter);
+                        var retryAfter = response.Headers.RetryAfter?.Delta?.TotalSeconds ?? Math.Pow(2, retryCount)*30;
+                        _logger.LogWarning("Rate limit hit. Retrying in {RetryAfter} seconds. Retry count: {RetryCount}.", retryAfter, retryCount);
                         await Task.Delay(TimeSpan.FromSeconds(retryAfter));
                     }
                     else
                     {
-                        response.EnsureSuccessStatusCode(); // Throw exception for other non-success status codes
+                        response.EnsureSuccessStatusCode();
                     }
                 }
                 finally
                 {
-                    _rateLimitSemaphore.Release(); // Release the slot after the request is complete
+                    _rateLimitSemaphore.Release();
                 }
             }
 
-            throw new HttpRequestException($"Failed to fetch data from {url} after {maxRetries} retries due to rate limiting.");
+            throw new HttpRequestException($"Failed to fetch data from {url} after {maxRetries} retries.");
         }
 
-        public async Task<GameDetails?> FetchGameDetailsAsync(HttpClient httpClient, int? appId)
+        private async Task<GameDetails?> FetchGameDetailsAsync(HttpClient httpClient, int appId)
         {
             try
             {
-                var gameDataResponse = await FetchWithRetryAndRateLimitAsync(httpClient, $"http://store.steampowered.com/api/appdetails?appids={appId}&l=english");
+                var url = $"http://store.steampowered.com/api/appdetails?appids={appId}&l=english";
+                var response = await FetchWithRetryAndRateLimitAsync(httpClient, url);
 
-                var gameDataDictionary = JsonConvert.DeserializeObject<Dictionary<string, GameDetailsResponse>>(gameDataResponse, new JsonSerializerSettings
+                var gameData = JsonConvert.DeserializeObject<Dictionary<string, GameDetailsResponse>>(response, new JsonSerializerSettings
                 {
                     NullValueHandling = NullValueHandling.Ignore,
                     MissingMemberHandling = MissingMemberHandling.Ignore
                 });
 
-                if (gameDataDictionary != null && gameDataDictionary.TryGetValue(appId.ToString(), out var gameDetailsResponse) && gameDetailsResponse.success)
+                if (gameData != null && gameData.TryGetValue(appId.ToString(), out var gameDetailsResponse) && gameDetailsResponse.success)
                 {
-                    return gameDetailsResponse.data;
+                    var gameDetails = gameDetailsResponse.data;
+
+                    // Perform currency conversion if necessary
+                    if (gameDetails?.priceOverview?.currency != "USD")
+                    {
+                        var exchangeRate = await GetExchangeRateAsync(httpClient, gameDetails.priceOverview.currency, "USD");
+                        if (exchangeRate > 0)
+                        {
+                            gameDetails.priceOverview.initial = Convert.ToInt32(gameDetails.priceOverview.initial / exchangeRate);
+                            gameDetails.priceOverview.final = Convert.ToInt32(gameDetails.priceOverview.final / exchangeRate);
+                            gameDetails.priceOverview.currency = "USD";
+                            gameDetails.priceOverview.initialFormatted = $"${gameDetails.priceOverview.initial / 100.0:F2}";
+                            gameDetails.priceOverview.finalFormatted = $"${gameDetails.priceOverview.final / 100.0:F2}";
+                        }
+                    }
+
+                    return gameDetails;
                 }
             }
             catch (Exception ex)
@@ -87,62 +101,159 @@ namespace NerdHub.Services
             return null;
         }
 
-        public async Task UpdateOwnedGames(long steamId, bool overrideExisting)
+        private async Task<double> GetExchangeRateAsync(HttpClient httpClient, string fromCurrency, string toCurrency)
+        {
+            try
+            {
+                var apiKey = _configuration["ExchangeRateApiKey"];
+                var url = $"https://api.exchangerate-api.com/v4/latest/{fromCurrency}";
+                var response = await httpClient.GetStringAsync(url);
+
+                var exchangeRateData = JsonConvert.DeserializeObject<ExchangeRateResponse>(response);
+                if (exchangeRateData?.Rates != null && exchangeRateData.Rates.TryGetValue(toCurrency, out var rate))
+                    return rate;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to fetch exchange rate from {FromCurrency} to {ToCurrency}", fromCurrency, toCurrency);
+            }
+
+            return 0; // Return 0 if the exchange rate could not be fetched
+        }
+
+        public async Task UpdateOwnedGamesAsync(long steamId, bool overrideExisting)
         {
             try
             {
                 var httpClient = new HttpClient();
                 var steamApiKey = _configuration["Steam:ApiKey"];
+                var url = $"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={steamApiKey}&steamid={steamId}&format=json";
 
-                var response = await FetchWithRetryAndRateLimitAsync(httpClient, $"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={steamApiKey}&steamid={steamId}&format=json");
-
+                var response = await FetchWithRetryAndRateLimitAsync(httpClient, url);
                 var apiResponse = JsonConvert.DeserializeObject<SteamApiResponse>(response, new JsonSerializerSettings
                 {
                     NullValueHandling = NullValueHandling.Ignore,
                     MissingMemberHandling = MissingMemberHandling.Ignore
                 });
 
-                if (apiResponse?.response?.games != null)
+                if (apiResponse?.response?.games == null) return;
+
+                var gameDetailsList = new List<WriteModel<GameDetails>>();
+                var failedGameIds = new List<int>(); // List to store failed game IDs
+
+                foreach (var game in apiResponse.response.games)
                 {
-                    var gameDetailsList = new List<WriteModel<GameDetails>>();
-
-                    foreach (var game in apiResponse.response.games)
+                    await _rateLimitSemaphore.WaitAsync(); // Respect rate limits
+                    try
                     {
-                        var existingGame = await _games.Find(g => g.steam_appid == game.steam_appid).FirstOrDefaultAsync();
+                        var filter = Builders<GameDetails>.Filter.Eq(g => g.appid, game.steam_appid);
+                        var existingGame = await _games.Find(filter).FirstOrDefaultAsync();
 
-                        if (existingGame != null && !overrideExisting)
+                        if (!overrideExisting && existingGame != null)
                         {
-                            _logger.LogInformation("Game with AppID {AppId} already exists in the database. Skipping.", game.steam_appid);
+                            _logger.LogInformation("Game with AppID {AppId} already exists. Skipping.", game.appid);
                             continue;
                         }
 
-                        var gameDetails = await FetchGameDetailsAsync(httpClient, game.steam_appid);
+                        var gameDetails = await FetchGameDetailsAsync(httpClient, (int)game.steam_appid);
                         if (gameDetails != null)
                         {
-                            gameDetails.LastModifiedTime = DateTime.UtcNow;
-                            gameDetails.ownedBy = new List<OwnedBy>
-                            {
-                                new OwnedBy { steamId = new List<long> { steamId } }
-                            };
+                            gameDetails.LastModifiedTime = DateTime.UtcNow.ToString("o");
 
-                            var filter = Builders<GameDetails>.Filter.Eq(g => g.steam_appid, gameDetails.steam_appid);
+                            // Preserve existing fields if the game already exists
+                            if (existingGame != null)
+                            {
+                                gameDetails.Id = existingGame.Id;
+                                gameDetails.ownedBy = existingGame.ownedBy ?? new List<OwnedBy>();
+                            }
+
+                            // Add the current Steam ID to the ownedBy list
+                            if (gameDetails.ownedBy == null)
+                            {
+                                gameDetails.ownedBy = new List<OwnedBy>();
+                            }
+
+                            var ownedByEntry = gameDetails.ownedBy.FirstOrDefault(o => o.steamId.Contains(steamId));
+                            if (ownedByEntry == null)
+                            {
+                                gameDetails.ownedBy.Add(new OwnedBy { steamId = new List<long> { steamId } });
+                            }
+
                             var update = new ReplaceOneModel<GameDetails>(filter, gameDetails) { IsUpsert = true };
                             gameDetailsList.Add(update);
+
+                            _logger.LogInformation("Successfully added or updated game with AppID {AppId}.", game.steam_appid);
+                        }
+                        else
+                        {
+                            failedGameIds.Add((int)game.steam_appid); // Add to failed list if details could not be fetched
                         }
                     }
-
-                    if (gameDetailsList.Count > 0)
+                    catch (Exception ex)
                     {
-                        await _games.BulkWriteAsync(gameDetailsList);
-                        _logger.LogInformation("Upserted {Count} game details into the database.", gameDetailsList.Count);
+                        _logger.LogError(ex, "Error processing game with AppID {AppId}.", game.steam_appid);
+                        failedGameIds.Add((int)game.steam_appid); // Add to failed list on exception
                     }
+                    finally
+                    {
+                        _rateLimitSemaphore.Release();
+                    }
+                }
+
+                if (gameDetailsList.Count > 0)
+                {
+                    await _games.BulkWriteAsync(gameDetailsList);
+                    _logger.LogInformation("Upserted {Count} game details into the database.", gameDetailsList.Count);
+                }
+
+                // Log the failed game IDs and their count
+                if (failedGameIds.Count > 0)
+                {
+                    _logger.LogWarning("Failed to fetch details for {Count} games. AppIDs: {FailedGameIds}", failedGameIds.Count, string.Join(", ", failedGameIds));
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "An error occurred while updating owned games for Steam ID {SteamId}", steamId);
+                _logger.LogError(ex, "Error updating owned games for Steam ID {SteamId}", steamId);
                 throw;
             }
         }
+
+        public async Task<GameDetails?> UpdateGameInfoAsync(int appId)
+        {
+            try
+            {
+                var httpClient = new HttpClient();
+                var gameDetails = await FetchGameDetailsAsync(httpClient, appId);
+
+                if (gameDetails != null)
+                {
+                    gameDetails.LastModifiedTime = DateTime.UtcNow.ToString("o");
+
+                    var filter = Builders<GameDetails>.Filter.Eq(g => g.appid, appId);
+                    var existingGame = await _games.Find(filter).FirstOrDefaultAsync();
+
+                    if (existingGame != null)
+                    {
+                        gameDetails.Id = existingGame.Id;
+                        gameDetails.ownedBy = existingGame.ownedBy ?? new List<OwnedBy>();
+                    }
+
+                    await _games.ReplaceOneAsync(filter, gameDetails, new ReplaceOptions { IsUpsert = true });
+                    _logger.LogInformation("Game with AppID {AppId} updated successfully.", appId);
+                    return gameDetails;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating game with AppID {AppId}.", appId);
+            }
+
+            return null;
+        }
+
+        public async Task<List<GameDetails>> GetAllGamesAsync() => await _games.Find(_ => true).ToListAsync();
+
+        public async Task<GameDetails> GetGameByIdAsync(int appId) => await _games.Find(g => g.appid == appId).FirstOrDefaultAsync();
     }
 }

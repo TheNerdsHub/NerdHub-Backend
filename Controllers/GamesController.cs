@@ -24,20 +24,14 @@ namespace NerdHub.Controllers
             _games = database.GetCollection<GameDetails>("games");
         }
 
-        /// <summary>
-        /// Updates the owned games for a given Steam ID.
-        /// </summary>
-        /// <param name="steamId">The Steam ID of the user.</param>
-        /// <param name="overrideExisting">Whether to override existing data.</param>
-        /// <returns>A success message or an error message.</returns>
-        [HttpGet("update-owned-games/{steamId}")]
+        [HttpPost("update-owned-games/{steamId}")]
         [ProducesResponseType(200)] // OK
         [ProducesResponseType(500)] // Internal Server Error
         public async Task<IActionResult> UpdateOwnedGames(long steamId, bool overrideExisting = false)
         {
             try
             {
-                await _steamService.UpdateOwnedGames(steamId, overrideExisting);
+                await _steamService.UpdateOwnedGamesAsync(steamId, overrideExisting);
                 return Ok("Owned games updated successfully.");
             }
             catch (Exception ex)
@@ -47,10 +41,6 @@ namespace NerdHub.Controllers
             }
         }
 
-        /// <summary>
-        /// Fetches all games from the database.
-        /// </summary>
-        /// <returns>A list of all games or an error message.</returns>
         [HttpGet]
         [ProducesResponseType(200)] // OK
         [ProducesResponseType(500)] // Internal Server Error
@@ -58,7 +48,7 @@ namespace NerdHub.Controllers
         {
             try
             {
-                var games = await _games.Find(_ => true).ToListAsync();
+                var games = await _steamService.GetAllGamesAsync();
                 return Ok(games);
             }
             catch (Exception ex)
@@ -68,11 +58,6 @@ namespace NerdHub.Controllers
             }
         }
 
-        /// <summary>
-        /// Fetches a specific game by its Steam App ID.
-        /// </summary>
-        /// <param name="appid">The Steam App ID of the game.</param>
-        /// <returns>The game details or an error message.</returns>
         [HttpGet("{appid}")]
         [ProducesResponseType(200)] // OK
         [ProducesResponseType(404)] // Not Found
@@ -81,7 +66,7 @@ namespace NerdHub.Controllers
         {
             try
             {
-                var game = await _games.Find(g => g.appid == appid).FirstOrDefaultAsync();
+                var game = await _steamService.GetGameByIdAsync(appid);
                 if (game == null)
                 {
                     return NotFound($"Game with AppID {appid} not found.");
@@ -93,6 +78,29 @@ namespace NerdHub.Controllers
             {
                 _logger.LogError(ex, "An error occurred while fetching the game with AppID {appid}.", appid);
                 return StatusCode(500, "An error occurred while fetching the game.");
+            }
+        }
+
+        [HttpPost("update-game-info/{appid}")]
+        [ProducesResponseType(200)] // OK
+        [ProducesResponseType(404)] // Not Found
+        [ProducesResponseType(500)] // Internal Server Error
+        public async Task<IActionResult> UpdateGameInfo(int appid)
+        {
+            try
+            {
+                var updatedGame = await _steamService.UpdateGameInfoAsync(appid);
+                if (updatedGame == null)
+                {
+                    return NotFound($"Game with AppID {appid} not found or could not be updated.");
+                }
+
+                return Ok($"Game with AppID {appid} updated successfully.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred while updating the game with AppID {appid}.", appid);
+                return StatusCode(500, "An error occurred while updating the game.");
             }
         }
     }
