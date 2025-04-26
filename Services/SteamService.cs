@@ -77,7 +77,7 @@ namespace NerdHub.Services
                     var gameDetails = gameDetailsResponse.data;
 
                     // Perform currency conversion if necessary
-                    if (gameDetails?.priceOverview?.currency != "USD")
+                    if (gameDetails?.priceOverview != null && gameDetails.priceOverview.currency != "USD")
                     {
                         var exchangeRate = await GetExchangeRateAsync(httpClient, gameDetails.priceOverview.currency, "USD");
                         if (exchangeRate > 0)
