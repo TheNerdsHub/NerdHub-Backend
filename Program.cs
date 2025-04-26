@@ -25,6 +25,8 @@ builder.Services.AddSingleton<IMongoClient, MongoClient>(sp =>
 
 // Register SteamService
 builder.Services.AddScoped<SteamService>();
+// Register UserMappingService
+builder.Services.AddScoped<UserMappingService>();
 
 // Configure CORS
 builder.Services.AddCors(options =>

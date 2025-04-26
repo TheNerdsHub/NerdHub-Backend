@@ -136,7 +136,11 @@ namespace NerdHub.Services
                     MissingMemberHandling = MissingMemberHandling.Ignore
                 });
 
-                if (apiResponse?.response?.games == null) return;
+                if (apiResponse?.response?.games == null)
+                {
+                    _logger.LogWarning("No games found for Steam ID {SteamId}. Response: {ApiResponse}", steamId, response);
+                    return;
+                }
 
                 var gameDetailsList = new List<WriteModel<GameDetails>>();
                 var failedGameIds = new List<int>(); // List to store failed game IDs
