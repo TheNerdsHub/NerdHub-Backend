@@ -6,19 +6,16 @@ namespace NerdHub.Models
 {
     public class GameDetails
     {
-        [BsonId]
-        [BsonRepresentation(BsonType.ObjectId)]
-        [JsonProperty("_id")]
-        public string? Id { get; set; }
-
         [JsonProperty("type")]
         public string? type { get; set; }
 
         [JsonProperty("name")]
         public string? name { get; set; }
 
+        [BsonId]
         private int? _appid;
 
+        [BsonIgnore]
         [JsonProperty("steam_appid")]
         public int? steam_appid
         {
@@ -154,7 +151,7 @@ namespace NerdHub.Models
         public string LastModifiedTime { get; set; } = DateTime.UtcNow.ToString("o");
 
         [JsonProperty("owned_by")]
-        public List<OwnedBy>? ownedBy { get; set; } = new List<OwnedBy>();
+        public OwnedBy? ownedBy { get; set; } = new OwnedBy();
 
         [BsonIgnore]
         [JsonProperty("playtime_forever")]
@@ -184,13 +181,16 @@ namespace NerdHub.Models
         [JsonProperty("playtime_disconnected")]
         public int playtime_disconnected { get; set; }
     }
-    public class OwnedBy {
-        [JsonProperty("steam")]
+
+    public class OwnedBy
+    {
+        [JsonProperty("steamId")]
         public List<long>? steamId { get; set; }
 
-        [JsonProperty("epic")]
+        [JsonProperty("epicId")]
         public List<int>? epicId { get; set; }
     }
+
     public class FullGame
     {
         [JsonProperty("appid")]
@@ -318,24 +318,27 @@ namespace NerdHub.Models
         public string? url { get; set; }
     }
     public class Category
-
     {
+        [BsonIgnore]
         public string? id { get; set; }
         public string? description { get; set; }
     }
     public class Genre
     {
+        [BsonIgnore]
         public string? id { get; set; }
         public string? description { get; set; }
     }
     public class Screenshot
     {
+        [BsonIgnore]
         public string? id { get; set; }
         public string? pathThumbnail { get; set; }
         public string? pathFull { get; set; }
     }
     public class Movie
     {
+        [BsonIgnore]
         public string? id { get; set; }
         public string? name { get; set; }
         public string? thumbnail { get; set; }

@@ -151,7 +151,38 @@ namespace NerdHub.Services
 
                         if (!overrideExisting && existingGame != null)
                         {
-                            _logger.LogInformation("Game with AppID {AppId} already exists. Skipping.", game.appid);
+                            // Ensure the ownedBy object is initialized
+                            if (existingGame.ownedBy == null)
+                            {
+                                existingGame.ownedBy = new OwnedBy
+                                {
+                                    steamId = new List<long>(),
+                                    epicId = null
+                                };
+                            }
+
+                            // Ensure the steamId list is initialized
+                            if (existingGame.ownedBy.steamId == null)
+                            {
+                                existingGame.ownedBy.steamId = new List<long>();
+                            }
+
+                            // Add the current Steam ID if it doesn't already exist
+                            if (!existingGame.ownedBy.steamId.Contains(steamId))
+                            {
+                                existingGame.ownedBy.steamId.Add(steamId);
+                                existingGame.LastModifiedTime = DateTime.UtcNow.ToString("o");
+                            }
+
+                            // Update the existing game in the database
+                            var update = new ReplaceOneModel<GameDetails>(
+                                Builders<GameDetails>.Filter.Eq(g => g.appid, existingGame.appid),
+                                existingGame
+                            ) { IsUpsert = true };
+
+                            gameDetailsList.Add(update);
+
+                            _logger.LogInformation("Game with AppID {AppId} already exists. Updated ownedBy to include SteamID {SteamId}.", game.appid, steamId);
                             continue;
                         }
 
@@ -163,20 +194,23 @@ namespace NerdHub.Services
                             // Preserve existing fields if the game already exists
                             if (existingGame != null)
                             {
-                                gameDetails.Id = existingGame.Id;
-                                gameDetails.ownedBy = existingGame.ownedBy ?? new List<OwnedBy>();
+                                gameDetails.appid = existingGame.appid;
+                                gameDetails.ownedBy = existingGame.ownedBy;
                             }
 
                             // Add the current Steam ID to the ownedBy list
                             if (gameDetails.ownedBy == null)
                             {
-                                gameDetails.ownedBy = new List<OwnedBy>();
+                                gameDetails.ownedBy = new OwnedBy();
                             }
 
-                            var ownedByEntry = gameDetails.ownedBy.FirstOrDefault(o => o.steamId.Contains(steamId));
-                            if (ownedByEntry == null)
+                            if (gameDetails.ownedBy.steamId == null || !gameDetails.ownedBy.steamId.Contains(steamId))
                             {
-                                gameDetails.ownedBy.Add(new OwnedBy { steamId = new List<long> { steamId } });
+                                if (gameDetails.ownedBy.steamId == null)
+                                {
+                                    gameDetails.ownedBy.steamId = new List<long>();
+                                }
+                                gameDetails.ownedBy.steamId.Add(steamId);
                             }
 
                             var update = new ReplaceOneModel<GameDetails>(filter, gameDetails) { IsUpsert = true };
@@ -218,7 +252,6 @@ namespace NerdHub.Services
                 throw;
             }
         }
-
         public async Task<GameDetails?> UpdateGameInfoAsync(int appId)
         {
             try
@@ -235,8 +268,8 @@ namespace NerdHub.Services
 
                     if (existingGame != null)
                     {
-                        gameDetails.Id = existingGame.Id;
-                        gameDetails.ownedBy = existingGame.ownedBy ?? new List<OwnedBy>();
+                        gameDetails.appid = existingGame.appid;
+                        gameDetails.ownedBy = existingGame.ownedBy;
                     }
 
                     await _games.ReplaceOneAsync(filter, gameDetails, new ReplaceOptions { IsUpsert = true });
