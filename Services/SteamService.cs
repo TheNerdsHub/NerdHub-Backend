@@ -121,7 +121,7 @@ namespace NerdHub.Services
             return 0; // Return 0 if the exchange rate could not be fetched
         }
 
-        public async Task UpdateOwnedGamesAsync(long steamId, bool overrideExisting)
+        public async Task UpdateOwnedGamesAsync(string steamId, bool overrideExisting)
         {
             try
             {
@@ -160,7 +160,7 @@ namespace NerdHub.Services
                             {
                                 existingGame.ownedBy = new OwnedBy
                                 {
-                                    steamId = new List<long>(),
+                                    steamId = new List<string>(),
                                     epicId = null
                                 };
                             }
@@ -168,18 +168,19 @@ namespace NerdHub.Services
                             // Ensure the steamId list is initialized
                             if (existingGame.ownedBy.steamId == null)
                             {
-                                existingGame.ownedBy.steamId = new List<long>();
+                                existingGame.ownedBy.steamId = new List<string>();
                             }
 
                             // Check if the current Steam ID is already in the list
-                            if (existingGame.ownedBy.steamId.Contains(steamId))
+                            if (existingGame.ownedBy.steamId.Contains(steamId.ToString()))
                             {
                                 _logger.LogInformation("Game with AppID {AppId} already exists and already includes SteamID {SteamId}. No update necessary.", game.appid, steamId);
                                 continue; // Skip further processing for this game
                             }
 
-                            // Add the current Steam ID to the list
-                            existingGame.ownedBy.steamId.Add(steamId);
+                            // Add the current Steam ID to the list as a string
+                            existingGame.ownedBy.steamId.Add(steamId.ToString());
+
                             existingGame.LastModifiedTime = DateTime.UtcNow.ToString("o");
 
                             // Update the existing game in the database
@@ -216,7 +217,7 @@ namespace NerdHub.Services
                             {
                                 if (gameDetails.ownedBy.steamId == null)
                                 {
-                                    gameDetails.ownedBy.steamId = new List<long>();
+                                    gameDetails.ownedBy.steamId = new List<string>();
                                 }
                                 gameDetails.ownedBy.steamId.Add(steamId);
                             }

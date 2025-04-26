@@ -185,10 +185,10 @@ namespace NerdHub.Models
     public class OwnedBy
     {
         [JsonProperty("steamId")]
-        public List<long>? steamId { get; set; }
+        public List<string>? steamId { get; set; }
 
         [JsonProperty("epicId")]
-        public List<int>? epicId { get; set; }
+        public string? epicId { get; set; }
     }
 
     public class FullGame

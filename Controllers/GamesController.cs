@@ -30,7 +30,7 @@ namespace NerdHub.Controllers
         [HttpPost("update-owned-games/{steamId}")]
         [ProducesResponseType(200)] // OK
         [ProducesResponseType(500)] // Internal Server Error
-        public async Task<IActionResult> UpdateOwnedGames(long steamId, bool overrideExisting = false)
+        public async Task<IActionResult> UpdateOwnedGames(string steamId, bool overrideExisting = false)
         {
             try
             {
