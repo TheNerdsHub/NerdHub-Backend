@@ -167,12 +167,16 @@ namespace NerdHub.Services
                                 existingGame.ownedBy.steamId = new List<long>();
                             }
 
-                            // Add the current Steam ID if it doesn't already exist
-                            if (!existingGame.ownedBy.steamId.Contains(steamId))
+                            // Check if the current Steam ID is already in the list
+                            if (existingGame.ownedBy.steamId.Contains(steamId))
                             {
-                                existingGame.ownedBy.steamId.Add(steamId);
-                                existingGame.LastModifiedTime = DateTime.UtcNow.ToString("o");
+                                _logger.LogInformation("Game with AppID {AppId} already exists and already includes SteamID {SteamId}. No update necessary.", game.appid, steamId);
+                                continue; // Skip further processing for this game
                             }
+
+                            // Add the current Steam ID to the list
+                            existingGame.ownedBy.steamId.Add(steamId);
+                            existingGame.LastModifiedTime = DateTime.UtcNow.ToString("o");
 
                             // Update the existing game in the database
                             var update = new ReplaceOneModel<GameDetails>(
@@ -216,7 +220,14 @@ namespace NerdHub.Services
                             var update = new ReplaceOneModel<GameDetails>(filter, gameDetails) { IsUpsert = true };
                             gameDetailsList.Add(update);
 
-                            _logger.LogInformation("Successfully added or updated game with AppID {AppId}.", game.steam_appid);
+                            if (existingGame == null)
+                            {
+                                _logger.LogInformation("Successfully added new game with AppID {AppId}.", game.steam_appid);
+                            }
+                            else
+                            {
+                                _logger.LogInformation("Successfully updated existing game with AppID {AppId}.", game.steam_appid);
+                            }
                         }
                         else
                         {
