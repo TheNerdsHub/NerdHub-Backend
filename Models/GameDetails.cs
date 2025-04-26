@@ -34,7 +34,7 @@ namespace NerdHub.Models
         }
 
         [JsonProperty("required_age")]
-        public int? requiredAge { get; set; }
+        public string? requiredAge { get; set; }
 
         [JsonProperty("is_free")]
         public bool? isFree { get; set; }
