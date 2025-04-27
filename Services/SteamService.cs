@@ -142,7 +142,6 @@ namespace NerdHub.Services
                     return;
                 }
 
-                var gameDetailsList = new List<WriteModel<GameDetails>>();
                 var failedGameIds = new List<int>(); // List to store failed game IDs
 
                 foreach (var game in apiResponse.response.games)
@@ -184,13 +183,7 @@ namespace NerdHub.Services
                             existingGame.LastModifiedTime = DateTime.UtcNow.ToString("o");
 
                             // Update the existing game in the database
-                            var update = new ReplaceOneModel<GameDetails>(
-                                Builders<GameDetails>.Filter.Eq(g => g.appid, existingGame.appid),
-                                existingGame
-                            ) { IsUpsert = true };
-
-                            gameDetailsList.Add(update);
-
+                            await _games.ReplaceOneAsync(filter, existingGame);
                             _logger.LogInformation("Game with AppID {AppId} already exists. Updated ownedBy to include SteamID {SteamId}.", game.appid, steamId);
                             continue;
                         }
@@ -205,33 +198,43 @@ namespace NerdHub.Services
                             {
                                 gameDetails.appid = existingGame.appid;
                                 gameDetails.ownedBy = existingGame.ownedBy;
-                            }
 
-                            // Add the current Steam ID to the ownedBy list
-                            if (gameDetails.ownedBy == null)
-                            {
-                                gameDetails.ownedBy = new OwnedBy();
-                            }
+                                // Add the current Steam ID to the ownedBy list
+                                if (gameDetails.ownedBy == null)
+                                {
+                                    gameDetails.ownedBy = new OwnedBy();
+                                }
 
-                            if (gameDetails.ownedBy.steamId == null || !gameDetails.ownedBy.steamId.Contains(steamId))
+                                if (gameDetails.ownedBy.steamId == null || !gameDetails.ownedBy.steamId.Contains(steamId))
+                                {
+                                    if (gameDetails.ownedBy.steamId == null)
+                                    {
+                                        gameDetails.ownedBy.steamId = new List<string>();
+                                    }
+                                    gameDetails.ownedBy.steamId.Add(steamId);
+                                }
+
+                                // Update the existing game
+                                await _games.ReplaceOneAsync(filter, gameDetails);
+                                _logger.LogInformation("Successfully updated existing game with AppID {AppId}.", game.steam_appid);
+                            }
+                            else
                             {
+                                // Add the current Steam ID to the ownedBy list
+                                if (gameDetails.ownedBy == null)
+                                {
+                                    gameDetails.ownedBy = new OwnedBy();
+                                }
+
                                 if (gameDetails.ownedBy.steamId == null)
                                 {
                                     gameDetails.ownedBy.steamId = new List<string>();
                                 }
                                 gameDetails.ownedBy.steamId.Add(steamId);
-                            }
 
-                            var update = new ReplaceOneModel<GameDetails>(filter, gameDetails) { IsUpsert = true };
-                            gameDetailsList.Add(update);
-
-                            if (existingGame == null)
-                            {
+                                // Insert the new game
+                                await _games.InsertOneAsync(gameDetails);
                                 _logger.LogInformation("Successfully added new game with AppID {AppId}.", game.steam_appid);
-                            }
-                            else
-                            {
-                                _logger.LogInformation("Successfully updated existing game with AppID {AppId}.", game.steam_appid);
                             }
                         }
                         else
@@ -248,12 +251,6 @@ namespace NerdHub.Services
                     {
                         _rateLimitSemaphore.Release();
                     }
-                }
-
-                if (gameDetailsList.Count > 0)
-                {
-                    await _games.BulkWriteAsync(gameDetailsList);
-                    _logger.LogInformation("Upserted {Count} game details into the database.", gameDetailsList.Count);
                 }
 
                 // Log the failed game IDs and their count
