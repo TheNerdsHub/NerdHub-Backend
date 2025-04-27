@@ -27,20 +27,27 @@ namespace NerdHub.Controllers
             var database = client.GetDatabase("NH-Games");
             _games = database.GetCollection<GameDetails>("games");
         }
-
-        [HttpPost("update-owned-games/{steamId}")]
+        
+        [HttpPost("update-owned-games")]
         [ProducesResponseType(200)] // OK
+        [ProducesResponseType(400)] // Bad Request
         [ProducesResponseType(500)] // Internal Server Error
-        public async Task<IActionResult> UpdateOwnedGames(string steamId, bool overrideExisting = false)
+        public async Task<IActionResult> UpdateOwnedGames([FromBody] string steamIds, bool overrideExisting = false)
         {
+            if (string.IsNullOrWhiteSpace(steamIds))
+            {
+                _logger.LogWarning("Invalid input: steamIds is null or empty.");
+                return BadRequest("Steam IDs cannot be null or empty.");
+            }
+
             try
             {
-                await _steamService.UpdateOwnedGamesAsync(steamId, overrideExisting);
+                await _steamService.UpdateOwnedGamesAsync(steamIds, overrideExisting);
                 return Ok("Owned games updated successfully.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "An error occurred while updating owned games for Steam ID {SteamId}", steamId);
+                _logger.LogError(ex, "An error occurred while updating owned games for Steam IDs: {SteamIds}", steamIds);
                 return StatusCode(500, "An error occurred while updating owned games.");
             }
         }

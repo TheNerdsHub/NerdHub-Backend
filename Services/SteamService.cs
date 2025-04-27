@@ -3,6 +3,7 @@ using MongoDB.Driver;
 using Newtonsoft.Json;
 using Microsoft.Extensions.Logging;
 using System.Threading;
+using System.Linq;
 
 namespace NerdHub.Services
 {
@@ -13,6 +14,7 @@ namespace NerdHub.Services
         private readonly ILogger<SteamService> _logger;
         private readonly SemaphoreSlim _rateLimitSemaphore = new SemaphoreSlim(3, 3); // Allow up to 3 concurrent requests
         private readonly TimeSpan _rateLimitDelay = TimeSpan.FromSeconds(1); // 1-second delay for rate limiting
+        private readonly HashSet<int> _blacklistedAppIds = new HashSet<int> { 100, 2430, 12750, 10190, 36630, 43160, 90530, 91310, 105430, 107400, 109400, 109410, 1368430, 1449560, 1890860, 200110, 201700, 202090, 202990, 204080, 205930, 21110, 21120, 212220, 212370, 216250, 218210, 218450, 221080, 221790, 226320, 227700, 234530, 238110, 239220, 241640, 263440, 2651360, 310380, 316390, 321040, 323370, 367540, 382850, 410700, 427920, 436150, 447500, 476620, 524440, 596350, 623990, 654310, 858460, 878760, 912290, 931180 };
 
         public SteamService(IConfiguration configuration, IMongoClient client, ILogger<SteamService> logger)
         {
@@ -121,152 +123,177 @@ namespace NerdHub.Services
             return 0; // Return 0 if the exchange rate could not be fetched
         }
 
-        public async Task UpdateOwnedGamesAsync(string steamId, bool overrideExisting)
+        public async Task UpdateOwnedGamesAsync(string steamIds, bool overrideExisting)
         {
             try
             {
                 var httpClient = new HttpClient();
                 var steamApiKey = _configuration["Steam:ApiKey"];
-                var url = $"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={steamApiKey}&steamid={steamId}&format=json";
+                var steamIdList = steamIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-                var response = await FetchWithRetryAndRateLimitAsync(httpClient, url);
-                var apiResponse = JsonConvert.DeserializeObject<SteamApiResponse>(response, new JsonSerializerSettings
+                var masterFailedGameIds = new HashSet<int>(); // Deduplicated master list of failed game IDs
+
+                foreach (var steamId in steamIdList)
                 {
-                    NullValueHandling = NullValueHandling.Ignore,
-                    MissingMemberHandling = MissingMemberHandling.Ignore
-                });
+                    var url = $"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={steamApiKey}&steamid={steamId}&format=json";
 
-                if (apiResponse?.response?.games == null)
-                {
-                    _logger.LogWarning("No games found for Steam ID {SteamId}. Response: {ApiResponse}", steamId, response);
-                    return;
-                }
-
-                var failedGameIds = new List<int>(); // List to store failed game IDs
-
-                foreach (var game in apiResponse.response.games)
-                {
-                    await _rateLimitSemaphore.WaitAsync(); // Respect rate limits
-                    try
+                    var response = await FetchWithRetryAndRateLimitAsync(httpClient, url);
+                    var apiResponse = JsonConvert.DeserializeObject<SteamApiResponse>(response, new JsonSerializerSettings
                     {
-                        var filter = Builders<GameDetails>.Filter.Eq(g => g.appid, game.steam_appid);
-                        var existingGame = await _games.Find(filter).FirstOrDefaultAsync();
+                        NullValueHandling = NullValueHandling.Ignore,
+                        MissingMemberHandling = MissingMemberHandling.Ignore
+                    });
 
-                        if (!overrideExisting && existingGame != null)
+                    if (apiResponse?.response?.games == null)
+                    {
+                        _logger.LogWarning("No games found for Steam ID {SteamId}. Response: {ApiResponse}", steamId, response);
+                        continue;
+                    }
+
+                    var failedGameIds = new List<int>(); // List to store failed game IDs for this Steam ID
+
+                    foreach (var game in apiResponse.response.games)
+{
+                    if (_blacklistedAppIds.Contains((int)game.appid))
+                    {
+                        _logger.LogInformation("Skipping blacklisted AppID {AppId}.", game.appid);
+                        continue;
+                    }
+
+                    await _rateLimitSemaphore.WaitAsync(); // Respect rate limits
+                        try
                         {
-                            // Ensure the ownedBy object is initialized
-                            if (existingGame.ownedBy == null)
+                            var filter = Builders<GameDetails>.Filter.Eq(g => g.appid, game.steam_appid);
+                            var existingGame = await _games.Find(filter).FirstOrDefaultAsync();
+
+                            if (!overrideExisting && existingGame != null)
                             {
-                                existingGame.ownedBy = new OwnedBy
+                                // Ensure the ownedBy object is initialized
+                                if (existingGame.ownedBy == null)
                                 {
-                                    steamId = new List<string>(),
-                                    epicId = null
-                                };
-                            }
-
-                            // Ensure the steamId list is initialized
-                            if (existingGame.ownedBy.steamId == null)
-                            {
-                                existingGame.ownedBy.steamId = new List<string>();
-                            }
-
-                            // Check if the current Steam ID is already in the list
-                            if (existingGame.ownedBy.steamId.Contains(steamId.ToString()))
-                            {
-                                _logger.LogInformation("Game with AppID {AppId} already exists and already includes SteamID {SteamId}. No update necessary.", game.appid, steamId);
-                                continue; // Skip further processing for this game
-                            }
-
-                            // Add the current Steam ID to the list as a string
-                            existingGame.ownedBy.steamId.Add(steamId.ToString());
-
-                            existingGame.LastModifiedTime = DateTime.UtcNow.ToString("o");
-
-                            // Update the existing game in the database
-                            await _games.ReplaceOneAsync(filter, existingGame);
-                            _logger.LogInformation("Game with AppID {AppId} already exists. Updated ownedBy to include SteamID {SteamId}.", game.appid, steamId);
-                            continue;
-                        }
-
-                        var gameDetails = await FetchGameDetailsAsync(httpClient, (int)game.steam_appid);
-                        if (gameDetails != null)
-                        {
-                            gameDetails.LastModifiedTime = DateTime.UtcNow.ToString("o");
-
-                            // Preserve existing fields if the game already exists
-                            if (existingGame != null)
-                            {
-                                gameDetails.appid = existingGame.appid;
-                                gameDetails.ownedBy = existingGame.ownedBy;
-
-                                // Add the current Steam ID to the ownedBy list
-                                if (gameDetails.ownedBy == null)
-                                {
-                                    gameDetails.ownedBy = new OwnedBy();
+                                    existingGame.ownedBy = new OwnedBy
+                                    {
+                                        steamId = new List<string>(),
+                                        epicId = null
+                                    };
                                 }
 
-                                if (gameDetails.ownedBy.steamId == null || !gameDetails.ownedBy.steamId.Contains(steamId))
+                                // Ensure the steamId list is initialized
+                                if (existingGame.ownedBy.steamId == null)
                                 {
+                                    existingGame.ownedBy.steamId = new List<string>();
+                                }
+
+                                // Check if the current Steam ID is already in the list
+                                if (existingGame.ownedBy.steamId.Contains(steamId))
+                                {
+                                    _logger.LogInformation("Game with AppID {AppId} already exists and already includes SteamID {SteamId}. No update necessary.", game.appid, steamId);
+                                    continue; // Skip further processing for this game
+                                }
+
+                                // Add the current Steam ID to the list
+                                existingGame.ownedBy.steamId.Add(steamId);
+
+                                existingGame.LastModifiedTime = DateTime.UtcNow.ToString("o");
+
+                                // Update the existing game in the database
+                                await _games.ReplaceOneAsync(filter, existingGame);
+                                _logger.LogInformation("Game with AppID {AppId} already exists. Updated ownedBy to include SteamID {SteamId}.", game.appid, steamId);
+                                continue;
+                            }
+
+                            var gameDetails = await FetchGameDetailsAsync(httpClient, (int)game.steam_appid);
+                            if (gameDetails != null)
+                            {
+                                gameDetails.LastModifiedTime = DateTime.UtcNow.ToString("o");
+
+                                // Preserve existing fields if the game already exists
+                                if (existingGame != null)
+                                {
+                                    gameDetails.appid = existingGame.appid;
+                                    gameDetails.ownedBy = existingGame.ownedBy;
+
+                                    // Add the current Steam ID to the ownedBy list
+                                    if (gameDetails.ownedBy == null)
+                                    {
+                                        gameDetails.ownedBy = new OwnedBy();
+                                    }
+
+                                    if (gameDetails.ownedBy.steamId == null || !gameDetails.ownedBy.steamId.Contains(steamId))
+                                    {
+                                        if (gameDetails.ownedBy.steamId == null)
+                                        {
+                                            gameDetails.ownedBy.steamId = new List<string>();
+                                        }
+                                        gameDetails.ownedBy.steamId.Add(steamId);
+                                    }
+
+                                    // Update the existing game
+                                    await _games.ReplaceOneAsync(filter, gameDetails);
+                                    _logger.LogInformation("Successfully updated existing game with AppID {AppId}.", game.steam_appid);
+                                }
+                                else
+                                {
+                                    // Add the current Steam ID to the ownedBy list
+                                    if (gameDetails.ownedBy == null)
+                                    {
+                                        gameDetails.ownedBy = new OwnedBy();
+                                    }
+
                                     if (gameDetails.ownedBy.steamId == null)
                                     {
                                         gameDetails.ownedBy.steamId = new List<string>();
                                     }
                                     gameDetails.ownedBy.steamId.Add(steamId);
-                                }
 
-                                // Update the existing game
-                                await _games.ReplaceOneAsync(filter, gameDetails);
-                                _logger.LogInformation("Successfully updated existing game with AppID {AppId}.", game.steam_appid);
+                                    // Insert the new game
+                                    await _games.InsertOneAsync(gameDetails);
+                                    _logger.LogInformation("Successfully added new game with AppID {AppId}.", game.steam_appid);
+                                }
                             }
                             else
                             {
-                                // Add the current Steam ID to the ownedBy list
-                                if (gameDetails.ownedBy == null)
-                                {
-                                    gameDetails.ownedBy = new OwnedBy();
-                                }
-
-                                if (gameDetails.ownedBy.steamId == null)
-                                {
-                                    gameDetails.ownedBy.steamId = new List<string>();
-                                }
-                                gameDetails.ownedBy.steamId.Add(steamId);
-
-                                // Insert the new game
-                                await _games.InsertOneAsync(gameDetails);
-                                _logger.LogInformation("Successfully added new game with AppID {AppId}.", game.steam_appid);
+                                failedGameIds.Add((int)game.steam_appid); // Add to failed list if details could not be fetched
                             }
                         }
-                        else
+                        catch (Exception ex)
                         {
-                            failedGameIds.Add((int)game.steam_appid); // Add to failed list if details could not be fetched
+                            _logger.LogError(ex, "Error processing game with AppID {AppId}.", game.steam_appid);
+                            failedGameIds.Add((int)game.steam_appid); // Add to failed list on exception
+                        }
+                        finally
+                        {
+                            _rateLimitSemaphore.Release();
                         }
                     }
-                    catch (Exception ex)
+
+                    // Add the failed game IDs for this Steam ID to the master list
+                    foreach (var failedGameId in failedGameIds)
                     {
-                        _logger.LogError(ex, "Error processing game with AppID {AppId}.", game.steam_appid);
-                        failedGameIds.Add((int)game.steam_appid); // Add to failed list on exception
-                    }
-                    finally
-                    {
-                        _rateLimitSemaphore.Release();
+                        masterFailedGameIds.Add(failedGameId);
                     }
                 }
 
-                // Log the failed game IDs and their count
-                if (failedGameIds.Count > 0)
+                // Log the deduplicated master list of failed game IDs
+                if (masterFailedGameIds.Count > 0)
                 {
-                    _logger.LogWarning("Failed to fetch details for {Count} games. AppIDs: {FailedGameIds}", failedGameIds.Count, string.Join(", ", failedGameIds));
+                    _logger.LogWarning("Failed to fetch details for {Count} unique games. AppIDs: {FailedGameIds}", masterFailedGameIds.Count, string.Join(", ", masterFailedGameIds));
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating owned games for Steam ID {SteamId}", steamId);
+                _logger.LogError(ex, "Error updating owned games for Steam IDs {SteamIds}", steamIds);
                 throw;
             }
         }
         public async Task<GameDetails?> UpdateGameInfoAsync(int appId)
         {
+            if (_blacklistedAppIds.Contains(appId))
+            {
+                _logger.LogWarning("Attempted to process blacklisted AppID {AppId}.", appId);
+                throw new BlacklistedAppIdException(appId);
+            }
+
             try
             {
                 var httpClient = new HttpClient();
