@@ -154,32 +154,36 @@ namespace NerdHub.Models
         public OwnedBy? ownedBy { get; set; } = new OwnedBy();
 
         [BsonIgnore]
+        [JsonProperty("playtime_2weeks")]
+        public int? playtime_2weeks { get; set; }
+
+        [BsonIgnore]
         [JsonProperty("playtime_forever")]
-        public int playtime_forever { get; set; }
+        public int? playtime_forever { get; set; }
 
         [BsonIgnore]
         [JsonProperty("playtime_windows_forever")]
-        public int playtime_windows_forever { get; set; }
+        public int? playtime_windows_forever { get; set; }
 
         [BsonIgnore]
         [JsonProperty("playtime_mac_forever")]
-        public int playtime_mac_forever { get; set; }
+        public int? playtime_mac_forever { get; set; }
 
         [BsonIgnore]
         [JsonProperty("playtime_linux_forever")]
-        public int playtime_linux_forever { get; set; }
+        public int? playtime_linux_forever { get; set; }
 
         [BsonIgnore]
         [JsonProperty("playtime_deck_forever")]
-        public int playtime_deck_forever { get; set; }
+        public int? playtime_deck_forever { get; set; }
 
         [BsonIgnore]
         [JsonProperty("rtime_last_played")]
-        public int rtime_last_played { get; set; }
+        public int? rtime_last_played { get; set; }
 
         [BsonIgnore]
         [JsonProperty("playtime_disconnected")]
-        public int playtime_disconnected { get; set; }
+        public int? playtime_disconnected { get; set; }
     }
 
     public class OwnedBy
