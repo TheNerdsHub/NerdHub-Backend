@@ -51,5 +51,18 @@ namespace NerdHub.Services
                 throw; // Re-throw the exception to be handled by the caller
             }
         }
+        public async Task<List<UserMapping>> GetAllUserMappingsAsync()
+        {
+            try
+            {
+                _logger.LogInformation("Fetching all user mappings from the database.");
+                return await _userMappings.Find(_ => true).ToListAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred while fetching all user mappings.");
+                throw; // Re-throw the exception to be handled by the caller
+            }
+        }
     }
 }

@@ -5,6 +5,7 @@ using NerdHub.Services;
 using Microsoft.Extensions.Logging;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace NerdHub.Controllers
 {
@@ -156,6 +157,30 @@ namespace NerdHub.Controllers
             {
                 _logger.LogError(ex, "An error occurred while adding or updating the user mapping for SteamId: {SteamId}", userMapping.SteamId);
                 return StatusCode(500, "An error occurred while adding or updating the user mapping.");
+            }
+        }
+
+        [HttpGet("get-all-usernames")]
+        [ProducesResponseType(200)] // OK
+        [ProducesResponseType(500)] // Internal Server Error
+        public async Task<IActionResult> GetAllUsernames()
+        {
+            try
+            {
+                _logger.LogInformation("Received request to fetch all usernames.");
+                var userMappings = await _userMappingService.GetAllUserMappingsAsync();
+                var response = userMappings.Select(mapping => new
+                {
+                    SteamId = mapping.SteamId,
+                    Username = mapping.Username,
+                    Nickname = mapping.Nickname
+                }).ToList();
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred while fetching all usernames.");
+                return StatusCode(500, "An error occurred while fetching all usernames.");
             }
         }
     }
