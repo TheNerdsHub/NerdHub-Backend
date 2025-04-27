@@ -323,27 +323,31 @@ namespace NerdHub.Models
     }
     public class Category
     {
-        [BsonIgnore]
-        public string? id { get; set; }
+        [BsonElement("categoryId")]
+        [JsonProperty("id")]
+        public string? categoryId { get; set; }
         public string? description { get; set; }
     }
     public class Genre
     {
-        [BsonIgnore]
-        public string? id { get; set; }
+        [BsonElement("genreId")]
+        [JsonProperty("id")]
+        public string? genreId { get; set; }
         public string? description { get; set; }
     }
     public class Screenshot
     {
-        [BsonIgnore]
-        public string? id { get; set; }
-        public string? pathThumbnail { get; set; }
-        public string? pathFull { get; set; }
+        [BsonElement("screenshotId")]
+        [JsonProperty("id")]
+        public string? screenshotId { get; set; }
+        public string? path_thumbnail { get; set; }
+        public string? path_full { get; set; }
     }
     public class Movie
     {
-        [BsonIgnore]
-        public string? id { get; set; }
+        [BsonElement("movieId")]
+        [JsonProperty("id")]
+        public string? movieId { get; set; }
         public string? name { get; set; }
         public string? thumbnail { get; set; }
         public Webm? webm { get; set; }

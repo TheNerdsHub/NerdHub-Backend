@@ -11,10 +11,11 @@ namespace NerdHub.Services
     {
         private readonly IConfiguration _configuration;
         private readonly IMongoCollection<GameDetails> _games;
+        private readonly IMongoCollection<BlacklistedAppId> _blacklistedAppIdsCollection;
         private readonly ILogger<SteamService> _logger;
         private readonly SemaphoreSlim _rateLimitSemaphore = new SemaphoreSlim(3, 3); // Allow up to 3 concurrent requests
         private readonly TimeSpan _rateLimitDelay = TimeSpan.FromSeconds(1); // 1-second delay for rate limiting
-        private readonly HashSet<int> _blacklistedAppIds = new HashSet<int> { 100, 2430, 12750, 10190, 36630, 43160, 90530, 91310, 105430, 107400, 109400, 109410, 1368430, 1449560, 1890860, 200110, 201700, 202090, 202990, 204080, 205930, 21110, 21120, 212220, 212370, 216250, 218210, 218450, 221080, 221790, 226320, 227700, 234530, 238110, 239220, 241640, 263440, 2651360, 310380, 316390, 321040, 323370, 367540, 382850, 410700, 427920, 436150, 447500, 476620, 524440, 596350, 623990, 654310, 858460, 878760, 912290, 931180 };
+        private HashSet<int> _blacklistedAppIds = new HashSet<int>(); // Cached blacklist
 
         public SteamService(IConfiguration configuration, IMongoClient client, ILogger<SteamService> logger)
         {
@@ -23,10 +24,55 @@ namespace NerdHub.Services
 
             var database = client.GetDatabase("NH-Games");
             _games = database.GetCollection<GameDetails>("games");
+            _blacklistedAppIdsCollection = database.GetCollection<BlacklistedAppId>("appBlacklist");
+
+            // Load the blacklist from the database
+            LoadBlacklistFromDatabase().Wait();
+        }
+
+        private async Task LoadBlacklistFromDatabase()
+        {
+            _logger.LogTrace("Loading blacklisted AppIDs from the database.");
+            try
+            {
+                // Project only the AppId field from the database
+                var blacklistedAppIds = await _blacklistedAppIdsCollection
+                    .Find(_ => true)
+                    .Project(b => b.AppId)
+                    .ToListAsync();
+
+                _blacklistedAppIds = blacklistedAppIds.ToHashSet();
+                _logger.LogInformation("Loaded {Count} blacklisted AppIDs from the database.", _blacklistedAppIds.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to load blacklisted AppIDs from the database.");
+                throw;
+            }
+        }
+
+        private async Task<bool> IsAppIdBlacklisted(int appId)
+        {
+            _logger.LogDebug("Checking if AppID {AppId} is blacklisted.", appId);
+            // Check if the app ID is in the cached blacklist
+            if (_blacklistedAppIds.Contains(appId))
+            {
+                return true;
+            }
+
+            // If not in cache, check the database
+            var isBlacklisted = await _blacklistedAppIdsCollection.Find(b => b.AppId == appId).AnyAsync();
+            if (isBlacklisted)
+            {
+                _blacklistedAppIds.Add(appId); // Add to cache
+            }
+
+            return isBlacklisted;
         }
 
         private async Task<string> FetchWithRetryAndRateLimitAsync(HttpClient httpClient, string url, int maxRetries = 15)
         {
+            _logger.LogTrace("Fetching URL: {Url} with retry and rate limit enabled.", url);
             int retryCount = 0;
 
             while (retryCount < maxRetries)
@@ -43,7 +89,7 @@ namespace NerdHub.Services
                     if ((int)response.StatusCode == 429) // Too Many Requests
                     {
                         retryCount++;
-                        var retryAfter = response.Headers.RetryAfter?.Delta?.TotalSeconds ?? Math.Pow(2, retryCount)*30;
+                        var retryAfter = response.Headers.RetryAfter?.Delta?.TotalSeconds ?? Math.Pow(2, retryCount) * 30;
                         _logger.LogWarning("Rate limit hit. Retrying in {RetryAfter} seconds. Retry count: {RetryCount}.", retryAfter, retryCount);
                         await Task.Delay(TimeSpan.FromSeconds(retryAfter));
                     }
@@ -63,6 +109,7 @@ namespace NerdHub.Services
 
         private async Task<GameDetails?> FetchGameDetailsAsync(HttpClient httpClient, int appId)
         {
+            _logger.LogTrace("Fetching game details for AppID {AppId}.", appId);
             try
             {
                 var url = $"http://store.steampowered.com/api/appdetails?appids={appId}&l=english";
@@ -91,7 +138,7 @@ namespace NerdHub.Services
                             gameDetails.priceOverview.finalFormatted = $"${gameDetails.priceOverview.final / 100.0:F2}";
                         }
                     }
-
+                    _logger.LogInformation("Successfully fetched game details for AppID {AppId}.", appId);
                     return gameDetails;
                 }
             }
@@ -105,6 +152,7 @@ namespace NerdHub.Services
 
         private async Task<double> GetExchangeRateAsync(HttpClient httpClient, string fromCurrency, string toCurrency)
         {
+            _logger.LogTrace("Fetching exchange rate from {FromCurrency} to {ToCurrency}.", fromCurrency, toCurrency);
             try
             {
                 var apiKey = _configuration["ExchangeRateApiKey"];
@@ -122,8 +170,7 @@ namespace NerdHub.Services
 
             return 0; // Return 0 if the exchange rate could not be fetched
         }
-
-        public async Task UpdateOwnedGamesAsync(string steamIds, bool overrideExisting)
+        public async Task UpdateOwnedGamesAsync(string steamIds, bool overrideExisting, List<int>? appIdsToUpdate = null)
         {
             try
             {
@@ -132,6 +179,8 @@ namespace NerdHub.Services
                 var steamIdList = steamIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
                 var masterFailedGameIds = new HashSet<int>(); // Deduplicated master list of failed game IDs
+                var skippedBlacklistedGameIds = new HashSet<int>(); // Deduplicated list of skipped blacklisted AppIDs
+                var writeModels = new List<WriteModel<GameDetails>>(); // List of write models for bulk operations
 
                 foreach (var steamId in steamIdList)
                 {
@@ -150,87 +199,71 @@ namespace NerdHub.Services
                         continue;
                     }
 
-                    var failedGameIds = new List<int>(); // List to store failed game IDs for this Steam ID
+                   foreach (var game in apiResponse.response.games)
+                   {
+                        // If appIdsToUpdate is provided, skip games not in the list
+                        if (appIdsToUpdate != null && !appIdsToUpdate.Contains((int)game.appid))
+                        {
+                            _logger.LogInformation("Skipping AppID {AppId} as it is not in the provided list of AppIDs to update.", game.appid);
+                            continue;
+                        }
 
-                    foreach (var game in apiResponse.response.games)
-{
-                    if (_blacklistedAppIds.Contains((int)game.appid))
-                    {
-                        _logger.LogInformation("Skipping blacklisted AppID {AppId}.", game.appid);
-                        continue;
-                    }
+                        // Check if the app ID is blacklisted
+                        if (await IsAppIdBlacklisted((int)game.appid))
+                        {
+                            _logger.LogInformation("Skipping blacklisted AppID {AppId}.", game.appid);
+                            skippedBlacklistedGameIds.Add((int)game.appid); // Add to skipped list
+                            continue;
+                        }
 
-                    await _rateLimitSemaphore.WaitAsync(); // Respect rate limits
+                        await _rateLimitSemaphore.WaitAsync(); // Respect rate limits
                         try
                         {
                             var filter = Builders<GameDetails>.Filter.Eq(g => g.appid, game.steam_appid);
                             var existingGame = await _games.Find(filter).FirstOrDefaultAsync();
 
-                            if (!overrideExisting && existingGame != null)
-                            {
-                                // Ensure the ownedBy object is initialized
-                                if (existingGame.ownedBy == null)
-                                {
-                                    existingGame.ownedBy = new OwnedBy
-                                    {
-                                        steamId = new List<string>(),
-                                        epicId = null
-                                    };
-                                }
-
-                                // Ensure the steamId list is initialized
-                                if (existingGame.ownedBy.steamId == null)
-                                {
-                                    existingGame.ownedBy.steamId = new List<string>();
-                                }
-
-                                // Check if the current Steam ID is already in the list
-                                if (existingGame.ownedBy.steamId.Contains(steamId))
-                                {
-                                    _logger.LogInformation("Game with AppID {AppId} already exists and already includes SteamID {SteamId}. No update necessary.", game.appid, steamId);
-                                    continue; // Skip further processing for this game
-                                }
-
-                                // Add the current Steam ID to the list
-                                existingGame.ownedBy.steamId.Add(steamId);
-
-                                existingGame.LastModifiedTime = DateTime.UtcNow.ToString("o");
-
-                                // Update the existing game in the database
-                                await _games.ReplaceOneAsync(filter, existingGame);
-                                _logger.LogInformation("Game with AppID {AppId} already exists. Updated ownedBy to include SteamID {SteamId}.", game.appid, steamId);
-                                continue;
-                            }
-
                             var gameDetails = await FetchGameDetailsAsync(httpClient, (int)game.steam_appid);
                             if (gameDetails != null)
                             {
+                                // Check if the appid in the response matches the current appid
+                                if (gameDetails.appid != game.steam_appid)
+                                {
+                                    _logger.LogWarning("Mismatch in AppID. Expected: {ExpectedAppId}, Received: {ReceivedAppId}. Likely needs to be added to the blacklist. Skipping.", game.steam_appid, gameDetails.appid);
+                                    masterFailedGameIds.Add((int)game.steam_appid); // Add to failed list
+                                    continue;
+                                }
+
                                 gameDetails.LastModifiedTime = DateTime.UtcNow.ToString("o");
 
-                                // Preserve existing fields if the game already exists
-                                if (existingGame != null)
+                                if (existingGame != null && !overrideExisting)
                                 {
-                                    gameDetails.appid = existingGame.appid;
-                                    gameDetails.ownedBy = existingGame.ownedBy;
-
-                                    // Add the current Steam ID to the ownedBy list
-                                    if (gameDetails.ownedBy == null)
+                                    // Update the ownedBy list for the existing game
+                                    if (existingGame.ownedBy == null)
                                     {
-                                        gameDetails.ownedBy = new OwnedBy();
+                                        existingGame.ownedBy = new OwnedBy();
                                     }
 
-                                    if (gameDetails.ownedBy.steamId == null || !gameDetails.ownedBy.steamId.Contains(steamId))
+                                    if (existingGame.ownedBy.steamId == null)
                                     {
-                                        if (gameDetails.ownedBy.steamId == null)
-                                        {
-                                            gameDetails.ownedBy.steamId = new List<string>();
-                                        }
-                                        gameDetails.ownedBy.steamId.Add(steamId);
+                                        existingGame.ownedBy.steamId = new List<string>();
                                     }
 
-                                    // Update the existing game
-                                    await _games.ReplaceOneAsync(filter, gameDetails);
-                                    _logger.LogInformation("Successfully updated existing game with AppID {AppId}.", game.steam_appid);
+                                    if (!existingGame.ownedBy.steamId.Contains(steamId))
+                                    {
+                                        existingGame.ownedBy.steamId.Add(steamId);
+                                    }
+
+                                    existingGame.LastModifiedTime = DateTime.UtcNow.ToString("o");
+
+                                    // Add an update model for the existing game
+                                    var updateModel = new ReplaceOneModel<GameDetails>(
+                                        Builders<GameDetails>.Filter.Eq(g => g.appid, existingGame.appid),
+                                        existingGame
+                                    );
+                                    writeModels.Add(updateModel);
+
+                                    // Log the WriteModel
+                                    _logger.LogInformation("Queued Replace for existing game with AppID {AppId}.", existingGame.appid);
                                 }
                                 else
                                 {
@@ -244,40 +277,66 @@ namespace NerdHub.Services
                                     {
                                         gameDetails.ownedBy.steamId = new List<string>();
                                     }
-                                    gameDetails.ownedBy.steamId.Add(steamId);
 
-                                    // Insert the new game
-                                    await _games.InsertOneAsync(gameDetails);
-                                    _logger.LogInformation("Successfully added new game with AppID {AppId}.", game.steam_appid);
+                                    if (!gameDetails.ownedBy.steamId.Contains(steamId))
+                                    {
+                                        gameDetails.ownedBy.steamId.Add(steamId);
+                                    }
+
+                                    // Add an upsert model for the new or updated game
+                                    var upsertModel = new ReplaceOneModel<GameDetails>(
+                                        Builders<GameDetails>.Filter.Eq(g => g.appid, gameDetails.appid),
+                                        gameDetails
+                                    )
+                                    {
+                                        IsUpsert = true
+                                    };
+                                    writeModels.Add(upsertModel);
+
+                                    // Log the WriteModel
+                                    if (existingGame == null)
+                                    {
+                                        _logger.LogInformation("Queued Upsert for new AppID {AppId}.", gameDetails.appid);
+                                    }
+                                    else
+                                    {
+                                        _logger.LogInformation("Queued ReplaceOneModel for updated game with AppID {AppId}.", gameDetails.appid);
+                                    }
                                 }
                             }
                             else
                             {
-                                failedGameIds.Add((int)game.steam_appid); // Add to failed list if details could not be fetched
+                                masterFailedGameIds.Add((int)game.steam_appid); // Add to failed list if details could not be fetched
                             }
                         }
                         catch (Exception ex)
                         {
                             _logger.LogError(ex, "Error processing game with AppID {AppId}.", game.steam_appid);
-                            failedGameIds.Add((int)game.steam_appid); // Add to failed list on exception
+                            masterFailedGameIds.Add((int)game.steam_appid); // Add to failed list on exception
                         }
                         finally
                         {
                             _rateLimitSemaphore.Release();
                         }
                     }
+                }
 
-                    // Add the failed game IDs for this Steam ID to the master list
-                    foreach (var failedGameId in failedGameIds)
-                    {
-                        masterFailedGameIds.Add(failedGameId);
-                    }
+                if (writeModels.Count > 0)
+                {
+                    await _games.BulkWriteAsync(writeModels);
+                    _logger.LogInformation("Successfully performed bulk write for {Count} operations.", writeModels.Count);
                 }
 
                 // Log the deduplicated master list of failed game IDs
                 if (masterFailedGameIds.Count > 0)
                 {
                     _logger.LogWarning("Failed to fetch details for {Count} unique games. AppIDs: {FailedGameIds}", masterFailedGameIds.Count, string.Join(", ", masterFailedGameIds));
+                }
+
+                // Log the deduplicated list of skipped blacklisted AppIDs
+                if (skippedBlacklistedGameIds.Count > 0)
+                {
+                    _logger.LogInformation("Skipped {Count} blacklisted games. AppIDs: {SkippedGameIds}", skippedBlacklistedGameIds.Count, string.Join(", ", skippedBlacklistedGameIds));
                 }
             }
             catch (Exception ex)
@@ -288,7 +347,7 @@ namespace NerdHub.Services
         }
         public async Task<GameDetails?> UpdateGameInfoAsync(int appId)
         {
-            if (_blacklistedAppIds.Contains(appId))
+            if (await IsAppIdBlacklisted(appId))
             {
                 _logger.LogWarning("Attempted to process blacklisted AppID {AppId}.", appId);
                 throw new BlacklistedAppIdException(appId);
@@ -325,8 +384,37 @@ namespace NerdHub.Services
             return null;
         }
 
-        public async Task<List<GameDetails>> GetAllGamesAsync() => await _games.Find(_ => true).ToListAsync();
-
-        public async Task<GameDetails> GetGameByIdAsync(int appId) => await _games.Find(g => g.appid == appId).FirstOrDefaultAsync();
+        public async Task<List<GameDetails>> GetAllGamesAsync()
+        {
+            _logger.LogTrace("Received request to GetAllGames.");
+            try
+            {
+                return await _games.Find(_ => true).ToListAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred while retrieving all games from the database.");
+                throw;
+            }
+        }
+        public async Task<GameDetails> GetGameByIdAsync(int appId)
+        {
+            _logger.LogTrace("Received request to GetGameById with AppID {AppId}.", appId);
+            try
+            {
+                var game = await _games.Find(g => g.appid == appId).FirstOrDefaultAsync();
+                if (game == null)
+                {
+                    _logger.LogWarning("Game with AppID {AppId} was not found in the database.", appId);
+                }
+                _logger.LogInformation("Successfully got {AppId}.", appId);
+                return game;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred while retrieving the AppID {AppId} from the database.", appId);
+                throw;
+            }
+        }
     }
 }
