@@ -32,7 +32,7 @@ namespace NerdHub.Controllers
         [ProducesResponseType(200)] // OK
         [ProducesResponseType(400)] // Bad Request
         [ProducesResponseType(500)] // Internal Server Error
-        public async Task<IActionResult> UpdateOwnedGames([FromBody] string steamIds, bool overrideExisting = false)
+        public async Task<IActionResult> UpdateOwnedGames([FromBody] string steamIds, bool overrideExisting = false, [FromQuery] List<int>? appIdsToUpdate = null)
         {
             if (string.IsNullOrWhiteSpace(steamIds))
             {
@@ -42,8 +42,19 @@ namespace NerdHub.Controllers
 
             try
             {
-                await _steamService.UpdateOwnedGamesAsync(steamIds, overrideExisting);
-                return Ok("Owned games updated successfully.");
+                // Call the service method and capture the result
+                var result = await _steamService.UpdateOwnedGamesAsync(steamIds, overrideExisting, appIdsToUpdate);
+
+                // Return a detailed response
+                return Ok(new
+                {
+                    Message = "Owned games update completed.",
+                    UpdatedGamesCount = result.UpdatedGamesCount,
+                    SkippedGamesCount = result.SkippedGamesCount,
+                    FailedGamesCount = result.FailedGamesCount,
+                    FailedGameIds = result.FailedGameIds,
+                    SkippedBlacklistedGameIds = result.SkippedBlacklistedGameIds
+                });
             }
             catch (Exception ex)
             {

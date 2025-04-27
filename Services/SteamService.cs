@@ -170,16 +170,31 @@ namespace NerdHub.Services
 
             return 0; // Return 0 if the exchange rate could not be fetched
         }
-        public async Task UpdateOwnedGamesAsync(string steamIds, bool overrideExisting, List<int>? appIdsToUpdate = null)
+        public async Task<UpdateOwnedGamesResult> UpdateOwnedGamesAsync(string steamIds, bool overrideExisting, List<int>? appIdsToUpdate = null)
         {
+            _logger.LogTrace("Received request to update owned games for Steam IDs: {SteamIds}", steamIds);
+            if (appIdsToUpdate == null)
+            {
+                _logger.LogTrace("No AppIDs provided to update. Proceeding with all owned games.");
+            }
+            else if (appIdsToUpdate != null && appIdsToUpdate.Count == 0)
+            {
+                _logger.LogWarning("Provided list of AppIDs to update is empty.");
+                throw new ArgumentException("App IDs to update cannot be an empty list.");
+            }
+            else
+            {
+                _logger.LogTrace("Provided list of AppIDs to update: {AppIdsToUpdate}", string.Join(", ", appIdsToUpdate));
+            }
+
+            var result = new UpdateOwnedGamesResult();
+
             try
             {
                 var httpClient = new HttpClient();
                 var steamApiKey = _configuration["Steam:ApiKey"];
                 var steamIdList = steamIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-                var masterFailedGameIds = new HashSet<int>(); // Deduplicated master list of failed game IDs
-                var skippedBlacklistedGameIds = new HashSet<int>(); // Deduplicated list of skipped blacklisted AppIDs
                 var writeModels = new List<WriteModel<GameDetails>>(); // List of write models for bulk operations
 
                 foreach (var steamId in steamIdList)
@@ -199,12 +214,13 @@ namespace NerdHub.Services
                         continue;
                     }
 
-                   foreach (var game in apiResponse.response.games)
-                   {
+                    foreach (var game in apiResponse.response.games)
+                    {
                         // If appIdsToUpdate is provided, skip games not in the list
                         if (appIdsToUpdate != null && !appIdsToUpdate.Contains((int)game.appid))
                         {
                             _logger.LogInformation("Skipping AppID {AppId} as it is not in the provided list of AppIDs to update.", game.appid);
+                            result.SkippedGamesCount++;
                             continue;
                         }
 
@@ -212,7 +228,8 @@ namespace NerdHub.Services
                         if (await IsAppIdBlacklisted((int)game.appid))
                         {
                             _logger.LogInformation("Skipping blacklisted AppID {AppId}.", game.appid);
-                            skippedBlacklistedGameIds.Add((int)game.appid); // Add to skipped list
+                            result.SkippedBlacklistedGameIds.Add((int)game.appid);
+                            result.SkippedGamesCount++;
                             continue;
                         }
 
@@ -229,7 +246,8 @@ namespace NerdHub.Services
                                 if (gameDetails.appid != game.steam_appid)
                                 {
                                     _logger.LogWarning("Mismatch in AppID. Expected: {ExpectedAppId}, Received: {ReceivedAppId}. Likely needs to be added to the blacklist. Skipping.", game.steam_appid, gameDetails.appid);
-                                    masterFailedGameIds.Add((int)game.steam_appid); // Add to failed list
+                                    result.FailedGameIds.Add((int)game.steam_appid);
+                                    result.FailedGamesCount++;
                                     continue;
                                 }
 
@@ -261,9 +279,7 @@ namespace NerdHub.Services
                                         existingGame
                                     );
                                     writeModels.Add(updateModel);
-
-                                    // Log the WriteModel
-                                    _logger.LogInformation("Queued Replace for existing game with AppID {AppId}.", existingGame.appid);
+                                    _logger.LogInformation("Queued Replace for AppID {steam_appid} successfully.", game.steam_appid);
                                 }
                                 else
                                 {
@@ -292,27 +308,22 @@ namespace NerdHub.Services
                                         IsUpsert = true
                                     };
                                     writeModels.Add(upsertModel);
-
-                                    // Log the WriteModel
-                                    if (existingGame == null)
-                                    {
-                                        _logger.LogInformation("Queued Upsert for new AppID {AppId}.", gameDetails.appid);
-                                    }
-                                    else
-                                    {
-                                        _logger.LogInformation("Queued ReplaceOneModel for updated game with AppID {AppId}.", gameDetails.appid);
-                                    }
+                                    _logger.LogInformation("Queued Upsert for AppID {steam_appid} successfully.", game.steam_appid);
                                 }
+
+                                result.UpdatedGamesCount++;
                             }
                             else
                             {
-                                masterFailedGameIds.Add((int)game.steam_appid); // Add to failed list if details could not be fetched
+                                result.FailedGameIds.Add((int)game.steam_appid);
+                                result.FailedGamesCount++;
                             }
                         }
                         catch (Exception ex)
                         {
                             _logger.LogError(ex, "Error processing game with AppID {AppId}.", game.steam_appid);
-                            masterFailedGameIds.Add((int)game.steam_appid); // Add to failed list on exception
+                            result.FailedGameIds.Add((int)game.steam_appid);
+                            result.FailedGamesCount++;
                         }
                         finally
                         {
@@ -327,17 +338,7 @@ namespace NerdHub.Services
                     _logger.LogInformation("Successfully performed bulk write for {Count} operations.", writeModels.Count);
                 }
 
-                // Log the deduplicated master list of failed game IDs
-                if (masterFailedGameIds.Count > 0)
-                {
-                    _logger.LogWarning("Failed to fetch details for {Count} unique games. AppIDs: {FailedGameIds}", masterFailedGameIds.Count, string.Join(", ", masterFailedGameIds));
-                }
-
-                // Log the deduplicated list of skipped blacklisted AppIDs
-                if (skippedBlacklistedGameIds.Count > 0)
-                {
-                    _logger.LogInformation("Skipped {Count} blacklisted games. AppIDs: {SkippedGameIds}", skippedBlacklistedGameIds.Count, string.Join(", ", skippedBlacklistedGameIds));
-                }
+                return result;
             }
             catch (Exception ex)
             {
@@ -345,6 +346,7 @@ namespace NerdHub.Services
                 throw;
             }
         }
+
         public async Task<GameDetails?> UpdateGameInfoAsync(int appId)
         {
             if (await IsAppIdBlacklisted(appId))
@@ -407,7 +409,7 @@ namespace NerdHub.Services
                 {
                     _logger.LogWarning("Game with AppID {AppId} was not found in the database.", appId);
                 }
-                _logger.LogInformation("Successfully got {AppId}.", appId);
+                _logger.LogInformation("Successfully fetched {AppId} from the database.", appId);
                 return game;
             }
             catch (Exception ex)
