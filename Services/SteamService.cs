@@ -216,39 +216,58 @@ namespace NerdHub.Services
                 var steamIdList = steamIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
                 var writeModels = new List<WriteModel<GameDetails>>(); // List of write models for bulk operations
+                var steamOwnedGames = new Dictionary<string, List<int>>(); // Dictionary to store owned games for each Steam ID
+                var apiResponse = new SteamApiResponse(); // Declare apiResponse outside the loop
 
                 foreach (var steamId in steamIdList)
                 {
                     var url = $"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={steamApiKey}&steamid={steamId}&format=json";
 
                     var response = await FetchWithRetryAndRateLimitAsync(httpClient, url);
-                    var apiResponse = JsonConvert.DeserializeObject<SteamApiResponse>(response, new JsonSerializerSettings
+                    apiResponse = JsonConvert.DeserializeObject<SteamApiResponse>(response, new JsonSerializerSettings
                     {
                         NullValueHandling = NullValueHandling.Ignore,
                         MissingMemberHandling = MissingMemberHandling.Ignore
                     });
+                    _logger.LogInformation("Successfully fetched owned games for Steam ID {SteamId}.", steamId);
 
-                    if (apiResponse?.response?.games == null)
+                    if (apiResponse?.response?.games != null)
+                    {
+                        steamOwnedGames[steamId] = apiResponse.response.games.Select(g => (int)g.appid).ToList();
+                    }
+                    else
                     {
                         _logger.LogWarning("No games found for Steam ID {SteamId}. Response: {ApiResponse}", steamId, response);
+                        steamOwnedGames[steamId] = new List<int>(); // Add an empty list for this Steam ID
+                    }
+                }
+
+                // Iterate through all games in the database
+                foreach (var kvp in steamOwnedGames)
+                {
+                    var steamId = kvp.Key;
+                    var ownedGames = kvp.Value;
+
+                    if (ownedGames == null)
+                    {
+                        _logger.LogWarning("No owned games found for Steam ID {SteamId}. Skipping.", steamId);
                         continue;
                     }
 
-                    foreach (var game in apiResponse.response.games)
+                    foreach (var appId in ownedGames)
                     {
-                        // If appIdsToUpdate is provided, skip games not in the list
-                        if (appIdsToUpdate != null && !appIdsToUpdate.Contains((int)game.appid))
+                        if (appIdsToUpdate != null && !appIdsToUpdate.Contains(appId))
                         {
-                            _logger.LogInformation("Skipping AppID {AppId} as it is not in the provided list of AppIDs to update.", game.appid);
+                            _logger.LogInformation("Skipping AppID {AppId} as it is not in the provided list of AppIDs to update.", appId);
                             result.SkippedGamesCount++;
                             continue;
                         }
 
                         // Check if the app ID is blacklisted
-                        if (await IsAppIdBlacklisted((int)game.appid))
+                        if (await IsAppIdBlacklisted(appId))
                         {
-                            _logger.LogInformation("Skipping blacklisted AppID {AppId}.", game.appid);
-                            result.SkippedBlacklistedGameIds.Add((int)game.appid);
+                            _logger.LogInformation("Skipping blacklisted AppID {AppId}.", appId);
+                            result.SkippedBlacklistedGameIds.Add(appId);
                             result.SkippedGamesCount++;
                             continue;
                         }
@@ -256,76 +275,101 @@ namespace NerdHub.Services
                         await _rateLimitSemaphore.WaitAsync(); // Respect rate limits
                         try
                         {
-                            var filter = Builders<GameDetails>.Filter.Eq(g => g.appid, game.steam_appid);
+                            var filter = Builders<GameDetails>.Filter.Eq(g => g.appid, appId);
                             var existingGame = await _games.Find(filter).FirstOrDefaultAsync();
 
-                            var gameDetails = await FetchGameDetailsAsync(httpClient, (int)game.steam_appid);
-                            if (gameDetails != null)
+                            if (existingGame != null && !overrideExisting)
                             {
-                                // Check if the appid in the response matches the current appid
-                                if (gameDetails.appid != game.steam_appid)
+                                _logger.LogInformation("Game with AppID {AppId} already exists in the database. Updating ownedBy field.", appId);
+                                existingGame.LastModifiedTime = DateTime.UtcNow.ToString("o");
+
+                                if (existingGame.ownedBy == null)
                                 {
-                                    _logger.LogWarning("Mismatch in AppID. Expected: {ExpectedAppId}, Received: {ReceivedAppId}. Likely needs to be added to the blacklist. Skipping.", game.steam_appid, gameDetails.appid);
-                                    result.FailedGameIds.Add((int)game.steam_appid);
-                                    result.FailedGamesCount++;
-                                    continue;
+                                    existingGame.ownedBy = new OwnedBy();
                                 }
 
-                                gameDetails.LastModifiedTime = DateTime.UtcNow.ToString("o");
-
-                                if (existingGame != null)
+                                if (existingGame.ownedBy.steamId == null)
                                 {
-                                    // Merge the ownedBy property
-                                    if (existingGame.ownedBy == null)
-                                    {
-                                        existingGame.ownedBy = new OwnedBy();
-                                    }
+                                    existingGame.ownedBy.steamId = new List<string>();
+                                }
 
-                                    if (existingGame.ownedBy.steamId == null)
+                                foreach (var dictionarySteamId in steamOwnedGames.Keys)
+                                {
+                                    if (steamOwnedGames[dictionarySteamId].Contains(appId))
                                     {
-                                        existingGame.ownedBy.steamId = new List<string>();
-                                    }
-
-                                    if (gameDetails.ownedBy?.steamId != null)
-                                    {
-                                        foreach (var ownedBySteamId in gameDetails.ownedBy.steamId)
+                                        if (!existingGame.ownedBy.steamId.Contains(dictionarySteamId))
                                         {
-                                            if (!existingGame.ownedBy.steamId.Contains(steamId))
-                                            {
-                                                existingGame.ownedBy.steamId.Add(steamId);
-                                            }
+                                            existingGame.ownedBy.steamId.Add(dictionarySteamId);
                                         }
                                     }
-
-                                    if (!overrideExisting)
-                                    {
-                                        gameDetails.ownedBy = existingGame.ownedBy;
-                                    }
                                 }
 
-                                // Add an upsert model for the new or updated game
                                 var upsertModel = new ReplaceOneModel<GameDetails>(
-                                    Builders<GameDetails>.Filter.Eq(g => g.appid, gameDetails.appid),
-                                    gameDetails
+                                    Builders<GameDetails>.Filter.Eq(g => g.appid, existingGame.appid),
+                                    existingGame
                                 )
                                 {
                                     IsUpsert = true
                                 };
                                 writeModels.Add(upsertModel);
-                                _logger.LogInformation("Queued Upsert for AppID {steam_appid} successfully.", game.steam_appid);
-
                                 result.UpdatedGamesCount++;
                             }
                             else
                             {
-                                result.FailedGameIds.Add((int)game.steam_appid);
-                                result.FailedGamesCount++;
+                                if (overrideExisting)
+                                {
+                                    _logger.LogInformation("Game with AppID {AppId} already exists in the database but overrideExists is True. Overriding existing game.", appId);
+                                }
+                                else
+                                {
+                                    _logger.LogInformation("Game with AppID {AppId} does not exist in the database. Adding new game.", appId);
+                                }
+                                var gameDetails = await FetchGameDetailsAsync(httpClient, appId);
+                                if (gameDetails != null)
+                                {
+                                    gameDetails.LastModifiedTime = DateTime.UtcNow.ToString("o");
+
+                                    gameDetails.ownedBy = new OwnedBy();
+                                    gameDetails.ownedBy.steamId = new List<string>();
+
+                                    foreach (var dictionarySteamId in steamOwnedGames.Keys)
+                                    {
+                                        if (steamOwnedGames[dictionarySteamId].Contains(appId))
+                                        {
+                                            if (!gameDetails.ownedBy.steamId.Contains(dictionarySteamId))
+                                            {
+                                                gameDetails.ownedBy.steamId.Add(dictionarySteamId);
+                                                _logger.LogInformation("Added Steam ID {SteamId} to the ownedBy list for AppID {AppId}.", dictionarySteamId, appId);
+                                            }
+                                        }
+                                        else
+                                        {
+                                            _logger.LogInformation("Steam ID {SteamId} does not own AppID {AppId}. Skipping", dictionarySteamId, appId);
+                                        }
+                                    }
+
+                                    var upsertModel = new ReplaceOneModel<GameDetails>(
+                                        Builders<GameDetails>.Filter.Eq(g => g.appid, gameDetails.appid),
+                                        gameDetails
+                                    )
+                                    {
+                                        IsUpsert = true
+                                    };
+                                    writeModels.Add(upsertModel);
+                                    result.UpdatedGamesCount++;
+                                }
+                                else
+                                {
+                                    _logger.LogWarning("Failed to fetch game details for AppID {AppId}.", appId);
+                                    result.FailedGameIds.Add(appId);
+                                    result.FailedGamesCount++;
+                                }
                             }
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "Error processing game with AppID {AppId}.", game.steam_appid);
-                            result.FailedGameIds.Add((int)game.steam_appid);
+                            _logger.LogError(ex, "Error processing game with AppID {AppId}.", appId);
+                            result.FailedGameIds.Add(appId);
                             result.FailedGamesCount++;
                         }
                         finally
@@ -371,7 +415,6 @@ namespace NerdHub.Services
 
                     var filter = Builders<GameDetails>.Filter.Eq(g => g.appid, appId);
                     var existingGame = await _games.Find(filter).FirstOrDefaultAsync();
-
                     if (existingGame != null)
                     {
                         gameDetails.appid = existingGame.appid;
