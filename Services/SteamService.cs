@@ -170,8 +170,31 @@ namespace NerdHub.Services
 
             return 0; // Return 0 if the exchange rate could not be fetched
         }
+
+        private async Task RefreshBlacklistAsync()
+        {
+            _logger.LogTrace("Refreshing blacklisted AppIDs from the database.");
+            try
+            {
+                var blacklistedAppIds = await _blacklistedAppIdsCollection
+                    .Find(_ => true)
+                    .Project(b => b.AppId)
+                    .ToListAsync();
+
+                _blacklistedAppIds = blacklistedAppIds.ToHashSet();
+                _logger.LogInformation("Refreshed {Count} blacklisted AppIDs from the database.", _blacklistedAppIds.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to refresh blacklisted AppIDs from the database.");
+                throw;
+            }
+        }
+
         public async Task<UpdateOwnedGamesResult> UpdateOwnedGamesAsync(string steamIds, bool overrideExisting, List<int>? appIdsToUpdate = null)
         {
+            await RefreshBlacklistAsync(); // Refresh blacklist at the start
+
             _logger.LogTrace("Received request to update owned games for Steam IDs: {SteamIds}", steamIds);
             if (appIdsToUpdate == null)
             {
@@ -253,9 +276,9 @@ namespace NerdHub.Services
 
                                 gameDetails.LastModifiedTime = DateTime.UtcNow.ToString("o");
 
-                                if (existingGame != null && !overrideExisting)
+                                if (existingGame != null)
                                 {
-                                    // Update the ownedBy list for the existing game
+                                    // Merge the ownedBy property
                                     if (existingGame.ownedBy == null)
                                     {
                                         existingGame.ownedBy = new OwnedBy();
@@ -266,50 +289,33 @@ namespace NerdHub.Services
                                         existingGame.ownedBy.steamId = new List<string>();
                                     }
 
-                                    if (!existingGame.ownedBy.steamId.Contains(steamId))
+                                    if (gameDetails.ownedBy?.steamId != null)
                                     {
-                                        existingGame.ownedBy.steamId.Add(steamId);
+                                        foreach (var ownedBySteamId in gameDetails.ownedBy.steamId)
+                                        {
+                                            if (!existingGame.ownedBy.steamId.Contains(steamId))
+                                            {
+                                                existingGame.ownedBy.steamId.Add(steamId);
+                                            }
+                                        }
                                     }
 
-                                    existingGame.LastModifiedTime = DateTime.UtcNow.ToString("o");
-
-                                    // Add an update model for the existing game
-                                    var updateModel = new ReplaceOneModel<GameDetails>(
-                                        Builders<GameDetails>.Filter.Eq(g => g.appid, existingGame.appid),
-                                        existingGame
-                                    );
-                                    writeModels.Add(updateModel);
-                                    _logger.LogInformation("Queued Replace for AppID {steam_appid} successfully.", game.steam_appid);
+                                    if (!overrideExisting)
+                                    {
+                                        gameDetails.ownedBy = existingGame.ownedBy;
+                                    }
                                 }
-                                else
+
+                                // Add an upsert model for the new or updated game
+                                var upsertModel = new ReplaceOneModel<GameDetails>(
+                                    Builders<GameDetails>.Filter.Eq(g => g.appid, gameDetails.appid),
+                                    gameDetails
+                                )
                                 {
-                                    // Add the current Steam ID to the ownedBy list
-                                    if (gameDetails.ownedBy == null)
-                                    {
-                                        gameDetails.ownedBy = new OwnedBy();
-                                    }
-
-                                    if (gameDetails.ownedBy.steamId == null)
-                                    {
-                                        gameDetails.ownedBy.steamId = new List<string>();
-                                    }
-
-                                    if (!gameDetails.ownedBy.steamId.Contains(steamId))
-                                    {
-                                        gameDetails.ownedBy.steamId.Add(steamId);
-                                    }
-
-                                    // Add an upsert model for the new or updated game
-                                    var upsertModel = new ReplaceOneModel<GameDetails>(
-                                        Builders<GameDetails>.Filter.Eq(g => g.appid, gameDetails.appid),
-                                        gameDetails
-                                    )
-                                    {
-                                        IsUpsert = true
-                                    };
-                                    writeModels.Add(upsertModel);
-                                    _logger.LogInformation("Queued Upsert for AppID {steam_appid} successfully.", game.steam_appid);
-                                }
+                                    IsUpsert = true
+                                };
+                                writeModels.Add(upsertModel);
+                                _logger.LogInformation("Queued Upsert for AppID {steam_appid} successfully.", game.steam_appid);
 
                                 result.UpdatedGamesCount++;
                             }
@@ -349,6 +355,8 @@ namespace NerdHub.Services
 
         public async Task<GameDetails?> UpdateGameInfoAsync(int appId)
         {
+            await RefreshBlacklistAsync(); // Refresh blacklist at the start
+
             if (await IsAppIdBlacklisted(appId))
             {
                 _logger.LogWarning("Attempted to process blacklisted AppID {AppId}.", appId);
