@@ -242,7 +242,8 @@ namespace NerdHub.Services
                     }
                 }
 
-                // Iterate through all games in the database
+                var fetchedGameDetailsCache = new Dictionary<int, GameDetails>();
+
                 foreach (var kvp in steamOwnedGames)
                 {
                     var steamId = kvp.Key;
@@ -318,27 +319,59 @@ namespace NerdHub.Services
                             {
                                 if (overrideExisting)
                                 {
-                                    _logger.LogInformation("Game with AppID {AppId} already exists in the database but overrideExists is True. Overriding existing game.", appId);
+                                    _logger.LogInformation("Game with AppId {AppId} does exist in the database, but override existing is set to True.", appId);
                                 }
                                 else
                                 {
-                                    _logger.LogInformation("Game with AppID {AppId} does not exist in the database. Adding new game.", appId);
+                                    _logger.LogInformation("Game with AppId {AppId} does not exist in the database. Adding.", appId);
                                 }
-                                var gameDetails = await FetchGameDetailsAsync(httpClient, appId);
-                                if (gameDetails != null)
+                                if (!fetchedGameDetailsCache.TryGetValue(appId, out var fetchedGameDetails))
                                 {
-                                    gameDetails.LastModifiedTime = DateTime.UtcNow.ToString("o");
+                                    _logger.LogInformation("Fetching game details for AppID {AppId} as overrideExisting is true.", appId);
+                                    fetchedGameDetails = await FetchGameDetailsAsync(httpClient, appId);
 
-                                    gameDetails.ownedBy = new OwnedBy();
-                                    gameDetails.ownedBy.steamId = new List<string>();
+                                    if (fetchedGameDetails != null)
+                                    {
+                                        fetchedGameDetails.LastModifiedTime = DateTime.UtcNow.ToString("o");
+                                        fetchedGameDetailsCache[appId] = fetchedGameDetails; // Cache the fetched game details
+
+                                        var upsertModel = new ReplaceOneModel<GameDetails>(
+                                            Builders<GameDetails>.Filter.Eq(g => g.appid, fetchedGameDetails.appid),
+                                            fetchedGameDetails
+                                        )
+                                        {
+                                            IsUpsert = true
+                                        };
+                                        writeModels.Add(upsertModel);
+                                        result.UpdatedGamesCount++;
+                                    }
+                                    else
+                                    {
+                                        _logger.LogWarning("Failed to fetch game details for AppID {AppId}.", appId);
+                                        result.FailedGameIds.Add(appId);
+                                        result.FailedGamesCount++;
+                                        continue;
+                                    }
+                                }
+
+                                    // Treat the fetched game details as an existing game
+                                    if (fetchedGameDetails.ownedBy == null)
+                                    {
+                                        fetchedGameDetails.ownedBy = new OwnedBy();
+                                    }
+
+                                    if (fetchedGameDetails.ownedBy.steamId == null)
+                                    {
+                                        fetchedGameDetails.ownedBy.steamId = new List<string>();
+                                    }
 
                                     foreach (var dictionarySteamId in steamOwnedGames.Keys)
                                     {
                                         if (steamOwnedGames[dictionarySteamId].Contains(appId))
                                         {
-                                            if (!gameDetails.ownedBy.steamId.Contains(dictionarySteamId))
+                                            if (!fetchedGameDetails.ownedBy.steamId.Contains(dictionarySteamId))
                                             {
-                                                gameDetails.ownedBy.steamId.Add(dictionarySteamId);
+                                                fetchedGameDetails.ownedBy.steamId.Add(dictionarySteamId);
                                                 _logger.LogInformation("Added Steam ID {SteamId} to the ownedBy list for AppID {AppId}.", dictionarySteamId, appId);
                                             }
                                         }
@@ -347,23 +380,6 @@ namespace NerdHub.Services
                                             _logger.LogInformation("Steam ID {SteamId} does not own AppID {AppId}. Skipping", dictionarySteamId, appId);
                                         }
                                     }
-
-                                    var upsertModel = new ReplaceOneModel<GameDetails>(
-                                        Builders<GameDetails>.Filter.Eq(g => g.appid, gameDetails.appid),
-                                        gameDetails
-                                    )
-                                    {
-                                        IsUpsert = true
-                                    };
-                                    writeModels.Add(upsertModel);
-                                    result.UpdatedGamesCount++;
-                                }
-                                else
-                                {
-                                    _logger.LogWarning("Failed to fetch game details for AppID {AppId}.", appId);
-                                    result.FailedGameIds.Add(appId);
-                                    result.FailedGamesCount++;
-                                }
                             }
                         }
                         catch (Exception ex)
