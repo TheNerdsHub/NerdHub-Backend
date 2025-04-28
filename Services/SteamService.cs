@@ -25,9 +25,6 @@ namespace NerdHub.Services
             var database = client.GetDatabase("NH-Games");
             _games = database.GetCollection<GameDetails>("games");
             _blacklistedAppIdsCollection = database.GetCollection<BlacklistedAppId>("appBlacklist");
-
-            // Load the blacklist from the database
-            LoadBlacklistFromDatabase().Wait();
         }
 
         private async Task LoadBlacklistFromDatabase()
