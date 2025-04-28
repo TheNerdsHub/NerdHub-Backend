@@ -238,7 +238,7 @@ namespace NerdHub.Services
                     else
                     {
                         _logger.LogWarning("No games found for Steam ID {SteamId}. Response: {ApiResponse}", steamId, response);
-                        steamOwnedGames[steamId] = new List<int>(); // Add an empty list for this Steam ID
+                        steamOwnedGames[steamId] = new List<int>();
                     }
                 }
 
@@ -268,7 +268,7 @@ namespace NerdHub.Services
                         if (await IsAppIdBlacklisted(appId))
                         {
                             _logger.LogInformation("Skipping blacklisted AppID {AppId}.", appId);
-                            result.SkippedBlacklistedGameIds.Add(appId);
+                            result.SkippedDueToBlacklist.Add(appId);
                             result.SkippedGamesCount++;
                             continue;
                         }
@@ -294,6 +294,7 @@ namespace NerdHub.Services
                                     existingGame.ownedBy.steamId = new List<string>();
                                 }
 
+                                bool changesMade = false;
                                 foreach (var dictionarySteamId in steamOwnedGames.Keys)
                                 {
                                     if (steamOwnedGames[dictionarySteamId].Contains(appId))
@@ -301,19 +302,27 @@ namespace NerdHub.Services
                                         if (!existingGame.ownedBy.steamId.Contains(dictionarySteamId))
                                         {
                                             existingGame.ownedBy.steamId.Add(dictionarySteamId);
+                                            changesMade = true;
                                         }
                                     }
                                 }
-
-                                var upsertModel = new ReplaceOneModel<GameDetails>(
-                                    Builders<GameDetails>.Filter.Eq(g => g.appid, existingGame.appid),
-                                    existingGame
-                                )
+                                if (changesMade)
                                 {
-                                    IsUpsert = true
-                                };
-                                writeModels.Add(upsertModel);
-                                result.UpdatedGamesCount++;
+                                    var upsertModel = new ReplaceOneModel<GameDetails>(
+                                        Builders<GameDetails>.Filter.Eq(g => g.appid, existingGame.appid),
+                                        existingGame
+                                    )
+                                    {
+                                        IsUpsert = true
+                                    };
+                                    writeModels.Add(upsertModel);
+                                    result.UpdatedGamesCount++;
+                                    _logger.LogInformation("Queued OwnedBy Update for AppID {AppId}.", appId);
+                                }
+                                else
+                                {
+                                    _logger.LogInformation("No changes made for AppID {AppId}. Skipping.", appId);
+                                }
                             }
                             else
                             {
@@ -327,7 +336,7 @@ namespace NerdHub.Services
                                 }
                                 if (!fetchedGameDetailsCache.TryGetValue(appId, out var fetchedGameDetails))
                                 {
-                                    _logger.LogInformation("Fetching game details for AppID {AppId} as overrideExisting is true.", appId);
+                                    _logger.LogInformation("Fetching game details for AppID {AppId}.", appId);
                                     fetchedGameDetails = await FetchGameDetailsAsync(httpClient, appId);
 
                                     if (fetchedGameDetails != null)
@@ -348,44 +357,44 @@ namespace NerdHub.Services
                                     else
                                     {
                                         _logger.LogWarning("Failed to fetch game details for AppID {AppId}.", appId);
-                                        result.FailedGameIds.Add(appId);
+                                        result.FailedToFetchGameDetails.Add(appId);
                                         result.FailedGamesCount++;
                                         continue;
                                     }
                                 }
 
-                                    // Treat the fetched game details as an existing game
-                                    if (fetchedGameDetails.ownedBy == null)
-                                    {
-                                        fetchedGameDetails.ownedBy = new OwnedBy();
-                                    }
+                                // Treat the fetched game details as an existing game
+                                if (fetchedGameDetails.ownedBy == null)
+                                {
+                                    fetchedGameDetails.ownedBy = new OwnedBy();
+                                }
 
-                                    if (fetchedGameDetails.ownedBy.steamId == null)
-                                    {
-                                        fetchedGameDetails.ownedBy.steamId = new List<string>();
-                                    }
+                                if (fetchedGameDetails.ownedBy.steamId == null)
+                                {
+                                    fetchedGameDetails.ownedBy.steamId = new List<string>();
+                                }
 
-                                    foreach (var dictionarySteamId in steamOwnedGames.Keys)
+                                foreach (var dictionarySteamId in steamOwnedGames.Keys)
+                                {
+                                    if (steamOwnedGames[dictionarySteamId].Contains(appId))
                                     {
-                                        if (steamOwnedGames[dictionarySteamId].Contains(appId))
+                                        if (!fetchedGameDetails.ownedBy.steamId.Contains(dictionarySteamId))
                                         {
-                                            if (!fetchedGameDetails.ownedBy.steamId.Contains(dictionarySteamId))
-                                            {
-                                                fetchedGameDetails.ownedBy.steamId.Add(dictionarySteamId);
-                                                _logger.LogInformation("Added Steam ID {SteamId} to the ownedBy list for AppID {AppId}.", dictionarySteamId, appId);
-                                            }
-                                        }
-                                        else
-                                        {
-                                            _logger.LogInformation("Steam ID {SteamId} does not own AppID {AppId}. Skipping", dictionarySteamId, appId);
+                                            fetchedGameDetails.ownedBy.steamId.Add(dictionarySteamId);
+                                            _logger.LogInformation("Added Steam ID {SteamId} to the ownedBy list for AppID {AppId}.", dictionarySteamId, appId);
                                         }
                                     }
+                                    else
+                                    {
+                                        _logger.LogInformation("Steam ID {SteamId} does not own AppID {AppId}. Skipping", dictionarySteamId, appId);
+                                    }
+                                }
                             }
                         }
                         catch (Exception ex)
                         {
                             _logger.LogError(ex, "Error processing game with AppID {AppId}.", appId);
-                            result.FailedGameIds.Add(appId);
+                            result.FailedToFetchGameDetails.Add(appId);
                             result.FailedGamesCount++;
                         }
                         finally

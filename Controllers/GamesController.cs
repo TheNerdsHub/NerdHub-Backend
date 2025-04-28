@@ -49,11 +49,12 @@ namespace NerdHub.Controllers
                 return Ok(new
                 {
                     Message = "Owned games update completed.",
-                    UpdatedGamesCount = result.UpdatedGamesCount,
-                    SkippedGamesCount = result.SkippedGamesCount,
-                    FailedGamesCount = result.FailedGamesCount,
-                    FailedGameIds = result.FailedGameIds,
-                    SkippedBlacklistedGameIds = result.SkippedBlacklistedGameIds
+                    result.UpdatedGamesCount,
+                    result.SkippedGamesCount,
+                    result.FailedGamesCount,
+                    result.FailedToFetchGameDetails,
+                    result.SkippedNotInUpdateList,
+                    result.SkippedDueToBlacklist
                 });
             }
             catch (Exception ex)
