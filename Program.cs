@@ -27,6 +27,8 @@ builder.Services.AddSingleton<IMongoClient, MongoClient>(sp =>
 builder.Services.AddScoped<SteamService>();
 // Register UserMappingService
 builder.Services.AddScoped<UserMappingService>();
+// Register ProgressTracker
+builder.Services.AddSingleton<IProgressTracker, ProgressTracker>();
 
 // Configure CORS
 builder.Services.AddCors(options =>

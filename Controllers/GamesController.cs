@@ -17,12 +17,19 @@ namespace NerdHub.Controllers
         private readonly UserMappingService _userMappingService;
         private readonly ILogger<GamesController> _logger;
         private readonly IMongoCollection<GameDetails> _games;
+        private readonly IProgressTracker _progressTracker;
 
-        public GamesController(SteamService steamService, UserMappingService userMappingService, IMongoClient client, ILogger<GamesController> logger)
+        public GamesController(
+            SteamService steamService,
+            UserMappingService userMappingService,
+            IMongoClient client,
+            ILogger<GamesController> logger,
+            IProgressTracker progressTracker)
         {
             _steamService = steamService;
             _userMappingService = userMappingService;
             _logger = logger;
+            _progressTracker = progressTracker;
 
             var database = client.GetDatabase("NH-Games");
             _games = database.GetCollection<GameDetails>("games");
@@ -43,7 +50,8 @@ namespace NerdHub.Controllers
             try
             {
                 // Call the service method and capture the result
-                var result = await _steamService.UpdateOwnedGamesAsync(steamIds, overrideExisting, appIdsToUpdate);
+                var operationId = Guid.NewGuid().ToString();
+                var result = await _steamService.UpdateOwnedGamesAsync(steamIds, overrideExisting, appIdsToUpdate, operationId);
 
                 // Return a detailed response
                 return Ok(new
@@ -61,6 +69,53 @@ namespace NerdHub.Controllers
             {
                 _logger.LogError(ex, "An error occurred while updating owned games for Steam IDs: {SteamIds}", steamIds);
                 return StatusCode(500, "An error occurred while updating owned games.");
+            }
+        }
+
+        [HttpPost("start-update")]
+        [ProducesResponseType(200)] // OK
+        [ProducesResponseType(400)] // Bad Request
+        [ProducesResponseType(500)] // Internal Server Error
+        public IActionResult StartUpdate([FromBody] string steamIds, [FromQuery] bool overrideExisting = false, [FromQuery] List<int>? appIdsToUpdate = null)
+        {
+            if (string.IsNullOrWhiteSpace(steamIds))
+            {
+                _logger.LogWarning("Invalid input: steamIds is null or empty.");
+                return BadRequest("Steam IDs cannot be null or empty.");
+            }
+
+            try
+            {
+                // Generate a unique operation ID
+                var operationId = Guid.NewGuid().ToString();
+
+                // Initialize progress tracking
+                _progressTracker.SetProgress(operationId, 0, "Initializing", "Starting the update process...");
+
+                // Start the update process asynchronously (fire-and-forget)
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        var result = await _steamService.UpdateOwnedGamesAsync(steamIds, overrideExisting, appIdsToUpdate, operationId);
+
+                        // Mark progress as complete
+                        _progressTracker.SetProgress(operationId, 100, "Completed", "Update process completed.");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "An error occurred during the update process for operationId: {OperationId}", operationId);
+                        _progressTracker.SetProgress(operationId, 100, "Failed", "An error occurred during the update process.");
+                    }
+                });
+
+                // Immediately return the operation ID to the client
+                return Ok(new { operationId });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred while starting the update process for Steam IDs: {SteamIds}", steamIds);
+                return StatusCode(500, "An error occurred while starting the update process.");
             }
         }
 
@@ -201,6 +256,21 @@ namespace NerdHub.Controllers
                 _logger.LogError(ex, "An error occurred while fetching all usernames.");
                 return StatusCode(500, "An error occurred while fetching all usernames.");
             }
+        }
+
+        [HttpGet("update-progress/{operationId}")]
+        [ProducesResponseType(200)] // OK
+        [ProducesResponseType(404)] // Not Found
+        public IActionResult GetUpdateProgress(string operationId)
+        {
+            if (!_progressTracker.TryGetProgress(operationId, out var progressInfo))
+            {
+                _logger.LogWarning("Progress not found for operationId: {OperationId}", operationId);
+                return NotFound(new { message = "Operation not found." });
+            }
+
+            _logger.LogInformation("Returning progress for operationId: {OperationId} - {ProgressInfo}", operationId, progressInfo);
+            return Ok(progressInfo);
         }
     }
 }

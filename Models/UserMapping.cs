@@ -7,10 +7,10 @@ namespace NerdHub.Models
     {
         [BsonId]
         [BsonRepresentation(BsonType.String)] // Use string to store Steam IDs as strings
-        public string SteamId { get; set; }
+        public required string SteamId { get; set; }
 
         [BsonElement("username")]
-        public string Username { get; set; }
+        public required string Username { get; set; }
 
         [BsonElement("nickname")]
         public string? Nickname { get; set; } // Optional nickname

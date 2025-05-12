@@ -16,17 +16,18 @@ namespace NerdHub.Services
         private readonly SemaphoreSlim _rateLimitSemaphore = new SemaphoreSlim(3, 3); // Allow up to 3 concurrent requests
         private readonly TimeSpan _rateLimitDelay = TimeSpan.FromSeconds(1); // 1-second delay for rate limiting
         private HashSet<int> _blacklistedAppIds = new HashSet<int>(); // Cached blacklist
+        private readonly IProgressTracker _progressTracker;
 
-        public SteamService(IConfiguration configuration, IMongoClient client, ILogger<SteamService> logger)
+        public SteamService(IConfiguration configuration, IMongoClient client, ILogger<SteamService> logger, IProgressTracker progressTracker)
         {
             _configuration = configuration;
             _logger = logger;
+            _progressTracker = progressTracker;
 
             var database = client.GetDatabase("NH-Games");
             _games = database.GetCollection<GameDetails>("games");
             _blacklistedAppIdsCollection = database.GetCollection<BlacklistedAppId>("appBlacklist");
         }
-
         private async Task LoadBlacklistFromDatabase()
         {
             _logger.LogTrace("Loading blacklisted AppIDs from the database.");
@@ -47,7 +48,6 @@ namespace NerdHub.Services
                 throw;
             }
         }
-
         private async Task<bool> IsAppIdBlacklisted(int appId)
         {
             _logger.LogDebug("Checking if AppID {AppId} is blacklisted.", appId);
@@ -66,7 +66,6 @@ namespace NerdHub.Services
 
             return isBlacklisted;
         }
-
         private async Task<string> FetchWithRetryAndRateLimitAsync(HttpClient httpClient, string url, int maxRetries = 15)
         {
             _logger.LogTrace("Fetching URL: {Url} with retry and rate limit enabled.", url);
@@ -103,7 +102,6 @@ namespace NerdHub.Services
 
             throw new HttpRequestException($"Failed to fetch data from {url} after {maxRetries} retries.");
         }
-
         private async Task<GameDetails?> FetchGameDetailsAsync(HttpClient httpClient, int appId)
         {
             _logger.LogTrace("Fetching game details for AppID {AppId}.", appId);
@@ -128,11 +126,11 @@ namespace NerdHub.Services
                         var exchangeRate = await GetExchangeRateAsync(httpClient, gameDetails.priceOverview.currency, "USD");
                         if (exchangeRate > 0)
                         {
-                            gameDetails.priceOverview.initial = Convert.ToInt32(gameDetails.priceOverview.initial / exchangeRate);
-                            gameDetails.priceOverview.final = Convert.ToInt32(gameDetails.priceOverview.final / exchangeRate);
+                            gameDetails.priceOverview.initial = gameDetails.priceOverview.initial / exchangeRate;
+                            gameDetails.priceOverview.final = gameDetails.priceOverview.final / exchangeRate;
                             gameDetails.priceOverview.currency = "USD";
-                            gameDetails.priceOverview.initialFormatted = $"${gameDetails.priceOverview.initial / 100.0:F2}";
-                            gameDetails.priceOverview.finalFormatted = $"${gameDetails.priceOverview.final / 100.0:F2}";
+                            gameDetails.priceOverview.initialFormatted = $"${gameDetails.priceOverview.initial:F2}";
+                            gameDetails.priceOverview.finalFormatted = $"${gameDetails.priceOverview.final:F2}";
                         }
                     }
                     _logger.LogInformation("Successfully fetched game details for AppID {AppId}.", appId);
@@ -146,8 +144,7 @@ namespace NerdHub.Services
 
             return null;
         }
-
-        private async Task<double> GetExchangeRateAsync(HttpClient httpClient, string fromCurrency, string toCurrency)
+        private async Task<decimal> GetExchangeRateAsync(HttpClient httpClient, string fromCurrency, string toCurrency)
         {
             _logger.LogTrace("Fetching exchange rate from {FromCurrency} to {ToCurrency}.", fromCurrency, toCurrency);
             try
@@ -158,7 +155,7 @@ namespace NerdHub.Services
 
                 var exchangeRateData = JsonConvert.DeserializeObject<ExchangeRateResponse>(response);
                 if (exchangeRateData?.Rates != null && exchangeRateData.Rates.TryGetValue(toCurrency, out var rate))
-                    return rate;
+                    return Convert.ToDecimal(rate);
             }
             catch (Exception ex)
             {
@@ -167,7 +164,6 @@ namespace NerdHub.Services
 
             return 0; // Return 0 if the exchange rate could not be fetched
         }
-
         private async Task RefreshBlacklistAsync()
         {
             _logger.LogTrace("Refreshing blacklisted AppIDs from the database.");
@@ -187,12 +183,12 @@ namespace NerdHub.Services
                 throw;
             }
         }
-
-        public async Task<UpdateOwnedGamesResult> UpdateOwnedGamesAsync(string steamIds, bool overrideExisting, List<int>? appIdsToUpdate = null)
+        public async Task<UpdateOwnedGamesResult> UpdateOwnedGamesAsync(string steamIds, bool overrideExisting, List<int>? appIdsToUpdate, string operationId)
         {
             await RefreshBlacklistAsync(); // Refresh blacklist at the start
 
             _logger.LogTrace("Received request to update owned games for Steam IDs: {SteamIds}", steamIds);
+
             if (appIdsToUpdate == null)
             {
                 _logger.LogTrace("No AppIDs provided to update. Proceeding with all owned games.");
@@ -208,41 +204,44 @@ namespace NerdHub.Services
             }
 
             var result = new UpdateOwnedGamesResult();
+            var httpClient = new HttpClient();
+            var steamApiKey = _configuration["Steam:ApiKey"];
+            var steamIdList = steamIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            var writeModels = new List<WriteModel<GameDetails>>();
+            var steamOwnedGames = new Dictionary<string, List<int>>();
+            var fetchedGameDetailsCache = new Dictionary<int, GameDetails>();
 
             try
             {
-                var httpClient = new HttpClient();
-                var steamApiKey = _configuration["Steam:ApiKey"];
-                var steamIdList = steamIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-                var writeModels = new List<WriteModel<GameDetails>>(); // List of write models for bulk operations
-                var steamOwnedGames = new Dictionary<string, List<int>>(); // Dictionary to store owned games for each Steam ID
-                var apiResponse = new SteamApiResponse(); // Declare apiResponse outside the loop
-
+                // Step 1: Fetch owned games for each Steam ID
+                _progressTracker.SetProgress(operationId, 10, "Fetching Owned Games", "Fetching owned games for Steam IDs...");
                 foreach (var steamId in steamIdList)
                 {
                     var url = $"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={steamApiKey}&steamid={steamId}&format=json";
-
                     var response = await FetchWithRetryAndRateLimitAsync(httpClient, url);
-                    apiResponse = JsonConvert.DeserializeObject<SteamApiResponse>(response, new JsonSerializerSettings
+
+                    var apiResponse = JsonConvert.DeserializeObject<SteamApiResponse>(response, new JsonSerializerSettings
                     {
                         NullValueHandling = NullValueHandling.Ignore,
                         MissingMemberHandling = MissingMemberHandling.Ignore
                     });
-                    _logger.LogInformation("Successfully fetched owned games for Steam ID {SteamId}.", steamId);
 
                     if (apiResponse?.response?.games != null)
                     {
                         steamOwnedGames[steamId] = apiResponse.response.games.Select(g => (int)g.appid).ToList();
+                        _logger.LogInformation("Successfully fetched owned games for Steam ID {SteamId}.", steamId);
                     }
                     else
                     {
-                        _logger.LogWarning("No games found for Steam ID {SteamId}. Response: {ApiResponse}", steamId, response);
+                        _logger.LogWarning("No games found for Steam ID {SteamId}.", steamId);
                         steamOwnedGames[steamId] = new List<int>();
                     }
                 }
 
-                var fetchedGameDetailsCache = new Dictionary<int, GameDetails>();
+                // Step 2: Process each game
+                int totalGames = steamOwnedGames.Values.Sum(games => games.Count);
+                int processedGames = 0;
 
                 foreach (var kvp in steamOwnedGames)
                 {
@@ -264,7 +263,6 @@ namespace NerdHub.Services
                             continue;
                         }
 
-                        // Check if the app ID is blacklisted
                         if (await IsAppIdBlacklisted(appId))
                         {
                             _logger.LogInformation("Skipping blacklisted AppID {AppId}.", appId);
@@ -273,7 +271,7 @@ namespace NerdHub.Services
                             continue;
                         }
 
-                        await _rateLimitSemaphore.WaitAsync(); // Respect rate limits
+                        await _rateLimitSemaphore.WaitAsync();
                         try
                         {
                             var filter = Builders<GameDetails>.Filter.Eq(g => g.appid, appId);
@@ -281,7 +279,7 @@ namespace NerdHub.Services
 
                             if (existingGame != null && !overrideExisting)
                             {
-                                _logger.LogInformation("Game with AppID {AppId} already exists in the database. Updating ownedBy field.", appId);
+                                _logger.LogInformation("Game with AppID {AppId} already exists. Updating ownedBy field.", appId);
                                 existingGame.LastModifiedTime = DateTime.UtcNow.ToString("o");
 
                                 if (existingGame.ownedBy == null)
@@ -342,7 +340,7 @@ namespace NerdHub.Services
                                     if (fetchedGameDetails != null)
                                     {
                                         fetchedGameDetails.LastModifiedTime = DateTime.UtcNow.ToString("o");
-                                        fetchedGameDetailsCache[appId] = fetchedGameDetails; // Cache the fetched game details
+                                        fetchedGameDetailsCache[appId] = fetchedGameDetails;
 
                                         var upsertModel = new ReplaceOneModel<GameDetails>(
                                             Builders<GameDetails>.Filter.Eq(g => g.appid, fetchedGameDetails.appid),
@@ -362,7 +360,7 @@ namespace NerdHub.Services
                                         continue;
                                     }
                                 }
-
+                                
                                 // Treat the fetched game details as an existing game
                                 if (fetchedGameDetails.ownedBy == null)
                                 {
@@ -394,31 +392,39 @@ namespace NerdHub.Services
                         catch (Exception ex)
                         {
                             _logger.LogError(ex, "Error processing game with AppID {AppId}.", appId);
-                            result.FailedToFetchGameDetails.Add(appId);
                             result.FailedGamesCount++;
                         }
                         finally
                         {
                             _rateLimitSemaphore.Release();
                         }
+
+                        // Update progress
+                        processedGames++;
+                        int progress = 10 + (int)((processedGames / (double)totalGames) * 80); // Scale to 80% max
+                        _progressTracker.SetProgress(operationId, progress, "Processing Games", $"Processed {processedGames} of {totalGames} games...");
+                        _logger.LogInformation("Progress updated: {Progress}% - {Phase} - {Message}", progress, "Processing Games", $"Processed {processedGames} of {totalGames} games...");
                     }
                 }
 
+                // Step 3: Perform bulk write
                 if (writeModels.Count > 0)
                 {
                     await _games.BulkWriteAsync(writeModels);
                     _logger.LogInformation("Successfully performed bulk write for {Count} operations.", writeModels.Count);
                 }
 
+                // Finalize progress
+                _progressTracker.SetProgress(operationId, 100, "Completed", "Update process completed.");
                 return result;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error updating owned games for Steam IDs {SteamIds}", steamIds);
+                _progressTracker.SetProgress(operationId, 100, "Failed", "An error occurred during the update process.");
                 throw;
             }
         }
-
         public async Task<GameDetails?> UpdateGameInfoAsync(int appId)
         {
             await RefreshBlacklistAsync(); // Refresh blacklist at the start
@@ -458,7 +464,6 @@ namespace NerdHub.Services
 
             return null;
         }
-
         public async Task<List<GameDetails>> GetAllGamesAsync()
         {
             _logger.LogTrace("Received request to GetAllGames.");

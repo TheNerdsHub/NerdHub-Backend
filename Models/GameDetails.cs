@@ -224,10 +224,10 @@ namespace NerdHub.Models
         public string? currency { get; set; }
 
         [JsonProperty("initial")]
-        public int initial { get; set; }
+        public decimal initial { get; set; }
 
         [JsonProperty("final")]
-        public int final { get; set; }
+        public decimal final { get; set; }
 
         [JsonProperty("discount_percent")]
         public int discountPercent { get; set; }
