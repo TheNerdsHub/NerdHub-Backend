@@ -115,15 +115,15 @@ namespace NerdHub.Controllers
                 var updatedGame = await _steamService.UpdateGameInfoAsync(appid);
                 if (updatedGame == null)
                 {
-                    return NotFound($"Game with AppID {appid} not found or could not be updated.");
+                    return NotFound(new { message = $"Game with AppID {appid} not found or could not be updated." });
                 }
 
-                return Ok($"Game with AppID {appid} updated successfully.");
+                return Ok(new { message = $"Game with AppID {appid} updated successfully." });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "An error occurred while updating the game with AppID {appid}.", appid);
-                return StatusCode(500, "An error occurred while updating the game.");
+                return StatusCode(500, new { message = "An error occurred while updating the game." });
             }
         }
 
