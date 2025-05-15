@@ -10,22 +10,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code (full history for tagging)
+      - name: Checkout code
         uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
 
       - name: Generate timestamp tag (Central Time)
-        run: echo "TIMESTAMP=v$(TZ='America/Chicago' date +'%Y.%m.%d.%H%M%S')" >> $GITHUB_ENV
+        id: gen_ts
+        run: |
+          TS="v$(TZ='America/Chicago' date +'%Y.%m.%d.%H%M%S')"
+          echo "::set-output name=timestamp::$TS"
 
       - name: Create & push Git tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TIMESTAMP" -m "Release $TIMESTAMP"
-          git push origin "$TIMESTAMP"
-        env:
-          TIMESTAMP: ${{ env.TIMESTAMP }}
+          git tag -a "${{ steps.gen_ts.outputs.timestamp }}" -m "Release ${{ steps.gen_ts.outputs.timestamp }}"
+          git push origin "${{ steps.gen_ts.outputs.timestamp }}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
@@ -45,5 +44,5 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/thenerdshub/nerdhub-backend:${{ env.TIMESTAMP }}
+            ghcr.io/thenerdshub/nerdhub-backend:${{ steps.gen_ts.outputs.timestamp }}
             ghcr.io/thenerdshub/nerdhub-backend:latest
