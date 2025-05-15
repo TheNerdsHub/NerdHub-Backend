@@ -16,7 +16,7 @@ jobs:
           fetch-depth: 0
 
       - name: Generate timestamp tag (Central Time)
-        run: echo "TIMESTAMP=$(TZ='America/Chicago' date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
+        run: echo "TIMESTAMP=v$(TZ='America/Chicago' date +'%Y.%m.%d.%H%M%S')" >> $GITHUB_ENV
 
       - name: Create & push Git tag
         run: |
