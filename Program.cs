@@ -30,7 +30,7 @@ builder.Services.AddScoped<UserMappingService>();
 // Register ProgressTracker
 builder.Services.AddSingleton<IProgressTracker, ProgressTracker>();
 
-builder.Services.AddCors(options =>
+/*builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
@@ -38,7 +38,7 @@ builder.Services.AddCors(options =>
               .AllowAnyMethod()
               .AllowAnyHeader();
     });
-});
+});*/
 
 var app = builder.Build();
 
@@ -49,7 +49,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseCors();
+//app.UseCors();
 
 app.UseHttpsRedirection();
 app.UseAuthorization();
