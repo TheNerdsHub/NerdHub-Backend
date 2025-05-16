@@ -30,27 +30,13 @@ builder.Services.AddScoped<UserMappingService>();
 // Register ProgressTracker
 builder.Services.AddSingleton<IProgressTracker, ProgressTracker>();
 
-// Configure CORS
 builder.Services.AddCors(options =>
 {
-    var allowedOrigins = builder.Environment.IsDevelopment()
-        ? new[] { "*" }
-        : (Environment.GetEnvironmentVariable("FRONTEND_URLS") ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries);
-
-    options.AddPolicy("CustomCorsPolicy", policy =>
+    options.AddDefaultPolicy(policy =>
     {
-        if (builder.Environment.IsDevelopment())
-        {
-            policy.AllowAnyOrigin()
-                  .AllowAnyMethod()
-                  .AllowAnyHeader();
-        }
-        else
-        {
-            policy.WithOrigins(allowedOrigins)
-                  .AllowAnyMethod()
-                  .AllowAnyHeader();
-        }
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
     });
 });
 
@@ -63,8 +49,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-// Use CORS
-app.UseCors("CustomCorsPolicy");
+app.UseCors();
 
 app.UseHttpsRedirection();
 app.UseAuthorization();
