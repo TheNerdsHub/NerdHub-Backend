@@ -567,7 +567,7 @@ namespace NerdHub.Services
 
             for (int batch = 0; batch < totalBatches; batch++)
             {
-                var batchAppIds = allAppIds.Skip(batch * batchSize).Take(batchSize).Where(id => id.HasValue).Select(id => id.Value).ToList();
+                var batchAppIds = allAppIds.Skip(batch * batchSize).Take(batchSize).Where(id => id != null).Select(id => id!.Value).ToList();
                 var appIdsString = string.Join(",", batchAppIds);
 
                 var url = $"https://store.steampowered.com/api/appdetails?appids={appIdsString}&filters=price_overview";
@@ -588,21 +588,32 @@ namespace NerdHub.Services
 
                 foreach (var appIdStr in batchAppIds.Select(id => id.ToString()))
                 {
-                    if (priceData.TryGetValue(appIdStr, out var appData) && appData.success == true && appData.data != null)
+                    dynamic? appData = null;
+                    if (priceData != null && priceData.TryGetValue(appIdStr, out appData) && appData != null && appData!.success == true && appData!.data != null)
                     {
-                        if (appData.data is Newtonsoft.Json.Linq.JObject dataObj && dataObj["price_overview"] != null)
+                        if (appData?.data is Newtonsoft.Json.Linq.JObject dataObj && dataObj["price_overview"] != null)
                         {
-                            var priceOverviewJson = dataObj["price_overview"].ToString();
-                            var priceOverview = JsonConvert.DeserializeObject<PriceOverview>(priceOverviewJson);
+                            var priceOverviewJson = dataObj["price_overview"]?.ToString();
+                            var priceOverview = !string.IsNullOrEmpty(priceOverviewJson)
+                                ? JsonConvert.DeserializeObject<PriceOverview>(priceOverviewJson)
+                                : null;
 
-                            var update = Builders<GameDetails>.Update
-                                .Set("priceOverview", priceOverview)
-                                .Set("LastModifiedTime", DateTime.UtcNow.ToString("o"));
+                            if (priceOverview != null)
+                            {
+                                var update = Builders<GameDetails>.Update
+                                    .Set("priceOverview", priceOverview)
+                                    .Set("LastModifiedTime", DateTime.UtcNow.ToString("o"));
 
-                            var filter = Builders<GameDetails>.Filter.Eq(g => g.appid, int.Parse(appIdStr));
-                            writeModels.Add(new UpdateOneModel<GameDetails>(filter, update));
-                            result.UpdatedGamesCount++;
-                            result.UpdatedAppIds.Add(int.Parse(appIdStr));
+                                var filter = Builders<GameDetails>.Filter.Eq(g => g.appid, int.Parse(appIdStr));
+                                writeModels.Add(new UpdateOneModel<GameDetails>(filter, update));
+                                result.UpdatedGamesCount++;
+                                result.UpdatedAppIds.Add(int.Parse(appIdStr));
+                            }
+                            else
+                            {
+                                result.SkippedGamesCount++;
+                                result.SkippedAppIds.Add(int.Parse(appIdStr));
+                            }
                         }
                         else
                         {
