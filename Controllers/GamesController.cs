@@ -308,5 +308,40 @@ namespace NerdHub.Controllers
             }
             return NotFound(new { message = "Result not found for this operation." });
         }
+
+        [HttpPost("start-price-update")]
+        [ProducesResponseType(200)] // OK
+        [ProducesResponseType(500)] // Internal Server Error
+        public IActionResult StartPriceUpdate()
+        {
+            try
+            {
+                var operationId = Guid.NewGuid().ToString();
+                _progressTracker.SetProgress(operationId, 0, "Initializing", "Starting price update process...");
+
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        var result = await _steamService.UpdateAllGamePricesAsync(operationId);
+                        _progressTracker.SetProgress(operationId, 100, "Completed", "Price update process completed.");
+                        _updateResults[operationId] = result;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "An error occurred during the price update process for operationId: {OperationId}", operationId);
+                        _progressTracker.SetProgress(operationId, 100, "Failed", "An error occurred during the price update process.");
+                        _updateResults[operationId] = new { Error = "An error occurred during the price update process." };
+                    }
+                });
+
+                return Ok(new { operationId });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred while starting the price update process.");
+                return StatusCode(500, "An error occurred while starting the price update process.");
+            }
+        }
     }
 }

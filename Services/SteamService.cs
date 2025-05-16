@@ -544,5 +544,102 @@ namespace NerdHub.Services
                 throw;
             }
         }
+        public async Task<UpdateGamePricesResult> UpdateAllGamePricesAsync(string operationId)
+        {
+            _logger.LogInformation("Starting bulk price overview update for all games.");
+
+            var allGames = await _games.Find(_ => true).Project(g => new { g.appid }).ToListAsync();
+            var allAppIds = allGames.Select(g => g.appid).ToList();
+
+            int batchSize = 500;
+            int totalBatches = (int)Math.Ceiling(allAppIds.Count / (double)batchSize);
+            int processed = 0;
+
+            var httpClient = new HttpClient();
+            var writeModels = new List<WriteModel<GameDetails>>();
+
+            var result = new UpdateGamePricesResult
+            {
+                TotalGamesCount = allAppIds.Count
+            };
+
+            _progressTracker.SetProgress(operationId, 0, "Initializing", "Starting price update process...");
+
+            for (int batch = 0; batch < totalBatches; batch++)
+            {
+                var batchAppIds = allAppIds.Skip(batch * batchSize).Take(batchSize).Where(id => id.HasValue).Select(id => id.Value).ToList();
+                var appIdsString = string.Join(",", batchAppIds);
+
+                var url = $"https://store.steampowered.com/api/appdetails?appids={appIdsString}&filters=price_overview";
+                string response;
+                try
+                {
+                    response = await FetchWithRetryAndRateLimitAsync(httpClient, url, operationId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to fetch price overviews for batch {Batch}.", batch + 1);
+                    result.FailedGamesCount += batchAppIds.Count;
+                    result.FailedAppIds.AddRange(batchAppIds);
+                    continue;
+                }
+
+                var priceData = JsonConvert.DeserializeObject<Dictionary<string, dynamic>>(response);
+
+                foreach (var appIdStr in batchAppIds.Select(id => id.ToString()))
+                {
+                    if (priceData.TryGetValue(appIdStr, out var appData) && appData.success == true && appData.data != null)
+                    {
+                        if (appData.data is Newtonsoft.Json.Linq.JObject dataObj && dataObj["price_overview"] != null)
+                        {
+                            var priceOverviewJson = dataObj["price_overview"].ToString();
+                            var priceOverview = JsonConvert.DeserializeObject<PriceOverview>(priceOverviewJson);
+
+                            var update = Builders<GameDetails>.Update
+                                .Set("priceOverview", priceOverview)
+                                .Set("LastModifiedTime", DateTime.UtcNow.ToString("o"));
+
+                            var filter = Builders<GameDetails>.Filter.Eq(g => g.appid, int.Parse(appIdStr));
+                            writeModels.Add(new UpdateOneModel<GameDetails>(filter, update));
+                            result.UpdatedGamesCount++;
+                            result.UpdatedAppIds.Add(int.Parse(appIdStr));
+                        }
+                        else
+                        {
+                            result.SkippedGamesCount++;
+                            result.SkippedAppIds.Add(int.Parse(appIdStr));
+                        }
+                    }
+                    else
+                    {
+                        result.FailedGamesCount++;
+                        result.FailedAppIds.Add(int.Parse(appIdStr));
+                    }
+                }
+
+                processed += batchAppIds.Count;
+                int progress = (int)((double)processed / allAppIds.Count * 100);
+                _progressTracker.SetProgress(
+                    operationId,
+                    progress,
+                    "Updating Prices",
+                    $"Processed {processed} of {allAppIds.Count} games for price update. (Batch {batch + 1} of {totalBatches})"
+                );
+                _logger.LogInformation("Processed {Processed} of {Total} games for price update.", processed, allAppIds.Count);
+            }
+
+            if (writeModels.Count > 0)
+            {
+                await _games.BulkWriteAsync(writeModels);
+                _logger.LogInformation("Bulk price update completed for {Count} games.", writeModels.Count);
+            }
+            else
+            {
+                _logger.LogInformation("No price updates were necessary.");
+            }
+
+            _progressTracker.SetProgress(operationId, 100, "Completed", "Price update process completed.");
+            return result;
+        }
     }
 }
