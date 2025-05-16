@@ -2,6 +2,7 @@ namespace NerdHub.Models
 {
     public class UpdateOwnedGamesResult
     {
+        public int TotalGamesCount { get; set; }
         public int UpdatedGamesCount { get; set; }
         public int SkippedGamesCount { get; set; }
         public int FailedGamesCount { get; set; }

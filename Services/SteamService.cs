@@ -66,7 +66,7 @@ namespace NerdHub.Services
 
             return isBlacklisted;
         }
-        private async Task<string> FetchWithRetryAndRateLimitAsync(HttpClient httpClient, string url, int maxRetries = 15)
+        private async Task<string> FetchWithRetryAndRateLimitAsync(HttpClient httpClient, string url, string operationId, int maxRetries = 15)
         {
             _logger.LogTrace("Fetching URL: {Url} with retry and rate limit enabled.", url);
             int retryCount = 0;
@@ -87,6 +87,19 @@ namespace NerdHub.Services
                         retryCount++;
                         var retryAfter = response.Headers.RetryAfter?.Delta?.TotalSeconds ?? Math.Pow(2, retryCount) * 30;
                         _logger.LogWarning("Rate limit hit. Retrying in {RetryAfter} seconds. Retry count: {RetryCount}.", retryAfter, retryCount);
+
+                        _progressTracker.SetProgress(
+                            operationId,
+                            0,
+                            "Rate Limited",
+                            $"Rate limit hit. Retrying in {retryAfter} seconds. Retry attempt {retryCount}."
+                        );
+                        // After setting progress, also set the RetryAfterSeconds property
+                        if (_progressTracker.TryGetProgress(operationId, out var progressInfo) && progressInfo != null)
+                        {
+                            progressInfo.RetryAfterSeconds = retryAfter;
+                        }
+
                         await Task.Delay(TimeSpan.FromSeconds(retryAfter));
                     }
                     else
@@ -102,13 +115,13 @@ namespace NerdHub.Services
 
             throw new HttpRequestException($"Failed to fetch data from {url} after {maxRetries} retries.");
         }
-        private async Task<GameDetails?> FetchGameDetailsAsync(HttpClient httpClient, int appId)
+        private async Task<GameDetails?> FetchGameDetailsAsync(HttpClient httpClient, int appId, string operationId)
         {
             _logger.LogTrace("Fetching game details for AppID {AppId}.", appId);
             try
             {
                 var url = $"http://store.steampowered.com/api/appdetails?appids={appId}&l=english";
-                var response = await FetchWithRetryAndRateLimitAsync(httpClient, url);
+                var response = await FetchWithRetryAndRateLimitAsync(httpClient, url, operationId);
 
                 var gameData = JsonConvert.DeserializeObject<Dictionary<string, GameDetailsResponse>>(response, new JsonSerializerSettings
                 {
@@ -121,7 +134,9 @@ namespace NerdHub.Services
                     var gameDetails = gameDetailsResponse.data;
 
                     // Perform currency conversion if necessary
-                    if (gameDetails?.priceOverview != null && gameDetails.priceOverview.currency != "USD")
+                    if (gameDetails?.priceOverview != null
+                        && !string.IsNullOrEmpty(gameDetails.priceOverview.currency)
+                        && gameDetails.priceOverview.currency != "USD")
                     {
                         var exchangeRate = await GetExchangeRateAsync(httpClient, gameDetails.priceOverview.currency, "USD");
                         if (exchangeRate > 0)
@@ -147,22 +162,34 @@ namespace NerdHub.Services
         private async Task<decimal> GetExchangeRateAsync(HttpClient httpClient, string fromCurrency, string toCurrency)
         {
             _logger.LogTrace("Fetching exchange rate from {FromCurrency} to {ToCurrency}.", fromCurrency, toCurrency);
-            try
+            decimal rate = 0;
+            int attempts = 0;
+            do
             {
-                var apiKey = _configuration["ExchangeRateApiKey"];
-                var url = $"https://api.exchangerate-api.com/v4/latest/{fromCurrency}";
-                var response = await httpClient.GetStringAsync(url);
+                try
+                {
+                    var apiKey = _configuration["ExchangeRateApiKey"];
+                    var url = $"https://api.exchangerate-api.com/v4/latest/{fromCurrency}";
+                    var response = await httpClient.GetStringAsync(url);
 
-                var exchangeRateData = JsonConvert.DeserializeObject<ExchangeRateResponse>(response);
-                if (exchangeRateData?.Rates != null && exchangeRateData.Rates.TryGetValue(toCurrency, out var rate))
-                    return Convert.ToDecimal(rate);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to fetch exchange rate from {FromCurrency} to {ToCurrency}", fromCurrency, toCurrency);
-            }
+                    var exchangeRateData = JsonConvert.DeserializeObject<ExchangeRateResponse>(response);
+                    if (exchangeRateData?.Rates != null && exchangeRateData.Rates.TryGetValue(toCurrency, out var fetchedRate))
+                    {
+                        rate = Convert.ToDecimal(fetchedRate);
+                        if (rate < 119.99m)
+                            return rate;
+                        _logger.LogWarning("Fetched exchange rate {Rate} is too high, retrying... (Attempt {Attempt})", rate, attempts + 1);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to fetch exchange rate from {FromCurrency} to {ToCurrency}", fromCurrency, toCurrency);
+                }
+                attempts++;
+                await Task.Delay(500); // Small delay before retrying
+            } while (rate >= 119.99m && attempts < 5);
 
-            return 0; // Return 0 if the exchange rate could not be fetched
+            return 0; // Return 0 if the exchange rate could not be fetched or is invalid
         }
         private async Task RefreshBlacklistAsync()
         {
@@ -200,7 +227,7 @@ namespace NerdHub.Services
             }
             else
             {
-                _logger.LogTrace("Provided list of AppIDs to update: {AppIdsToUpdate}", string.Join(", ", appIdsToUpdate));
+                _logger.LogTrace("Provided list of AppIDs to update: {AppIdsToUpdate}", string.Join(", ", appIdsToUpdate!));
             }
 
             var result = new UpdateOwnedGamesResult();
@@ -215,11 +242,12 @@ namespace NerdHub.Services
             try
             {
                 // Step 1: Fetch owned games for each Steam ID
-                _progressTracker.SetProgress(operationId, 10, "Fetching Owned Games", "Fetching owned games for Steam IDs...");
+                int totalSteamIds = steamIdList.Length;
+                int processedSteamIds = 0;
                 foreach (var steamId in steamIdList)
                 {
                     var url = $"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={steamApiKey}&steamid={steamId}&format=json";
-                    var response = await FetchWithRetryAndRateLimitAsync(httpClient, url);
+                    var response = await FetchWithRetryAndRateLimitAsync(httpClient, url, operationId);
 
                     var apiResponse = JsonConvert.DeserializeObject<SteamApiResponse>(response, new JsonSerializerSettings
                     {
@@ -229,7 +257,10 @@ namespace NerdHub.Services
 
                     if (apiResponse?.response?.games != null)
                     {
-                        steamOwnedGames[steamId] = apiResponse.response.games.Select(g => (int)g.appid).ToList();
+                        steamOwnedGames[steamId] = apiResponse.response.games
+                            .Where(g => g.appid != null)
+                            .Select(g => g.appid!.Value)
+                            .ToList();
                         _logger.LogInformation("Successfully fetched owned games for Steam ID {SteamId}.", steamId);
                     }
                     else
@@ -237,10 +268,21 @@ namespace NerdHub.Services
                         _logger.LogWarning("No games found for Steam ID {SteamId}.", steamId);
                         steamOwnedGames[steamId] = new List<int>();
                     }
+
+                    processedSteamIds++;
+                    int progress = (int)(10 * (processedSteamIds / (double)totalSteamIds)); // Scale to 10% max
+                    _progressTracker.SetProgress(
+                        operationId,
+                        progress,
+                        "Fetching Owned Games",
+                        $"Fetched {processedSteamIds} of {totalSteamIds} Steam IDs... (Current SteamID: {steamId})"
+                    );
+                    _logger.LogInformation("Progress updated: {Progress}% - {Phase} - {Message}", progress, "Fetching Owned Games", $"Fetched {processedSteamIds} of {totalSteamIds} Steam IDs... (Current SteamID: {steamId})");
                 }
 
                 // Step 2: Process each game
                 int totalGames = steamOwnedGames.Values.Sum(games => games.Count);
+                result.TotalGamesCount = totalGames;
                 int processedGames = 0;
 
                 foreach (var kvp in steamOwnedGames)
@@ -335,7 +377,7 @@ namespace NerdHub.Services
                                 if (!fetchedGameDetailsCache.TryGetValue(appId, out var fetchedGameDetails))
                                 {
                                     _logger.LogInformation("Fetching game details for AppID {AppId}.", appId);
-                                    fetchedGameDetails = await FetchGameDetailsAsync(httpClient, appId);
+                                    fetchedGameDetails = await FetchGameDetailsAsync(httpClient, appId, operationId);
 
                                     if (fetchedGameDetails != null)
                                     {
@@ -360,7 +402,7 @@ namespace NerdHub.Services
                                         continue;
                                     }
                                 }
-                                
+
                                 // Treat the fetched game details as an existing game
                                 if (fetchedGameDetails.ownedBy == null)
                                 {
@@ -402,8 +444,13 @@ namespace NerdHub.Services
                         // Update progress
                         processedGames++;
                         int progress = 10 + (int)((processedGames / (double)totalGames) * 80); // Scale to 80% max
-                        _progressTracker.SetProgress(operationId, progress, "Processing Games", $"Processed {processedGames} of {totalGames} games...");
-                        _logger.LogInformation("Progress updated: {Progress}% - {Phase} - {Message}", progress, "Processing Games", $"Processed {processedGames} of {totalGames} games...");
+                        _progressTracker.SetProgress(
+                            operationId,
+                            progress,
+                            "Processing Games",
+                            $"Processed {processedGames} of {totalGames} games... (Current AppID: {appId})"
+                        );
+                        _logger.LogInformation("Progress updated: {Progress}% - {Phase} - {Message}", progress, "Processing Games", $"Processed {processedGames} of {totalGames} games... (Current AppID: {appId})");
                     }
                 }
 
@@ -438,7 +485,8 @@ namespace NerdHub.Services
             try
             {
                 var httpClient = new HttpClient();
-                var gameDetails = await FetchGameDetailsAsync(httpClient, appId);
+                var operationId = Guid.NewGuid().ToString();
+                var gameDetails = await FetchGameDetailsAsync(httpClient, appId, operationId);
 
                 if (gameDetails != null)
                 {
@@ -477,7 +525,7 @@ namespace NerdHub.Services
                 throw;
             }
         }
-        public async Task<GameDetails> GetGameByIdAsync(int appId)
+        public async Task<GameDetails?> GetGameByIdAsync(int appId)
         {
             _logger.LogTrace("Received request to GetGameById with AppID {AppId}.", appId);
             try

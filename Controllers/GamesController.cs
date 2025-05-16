@@ -19,6 +19,8 @@ namespace NerdHub.Controllers
         private readonly IMongoCollection<GameDetails> _games;
         private readonly IProgressTracker _progressTracker;
 
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, object> _updateResults = new();
+
         public GamesController(
             SteamService steamService,
             UserMappingService userMappingService,
@@ -99,13 +101,25 @@ namespace NerdHub.Controllers
                     {
                         var result = await _steamService.UpdateOwnedGamesAsync(steamIds, overrideExisting, appIdsToUpdate, operationId);
 
-                        // Mark progress as complete
+                        // Store the result for later retrieval
+                        _updateResults[operationId] = new
+                        {
+                            Message = "Owned games update completed.",
+                            result.UpdatedGamesCount,
+                            result.SkippedGamesCount,
+                            result.FailedGamesCount,
+                            result.FailedToFetchGameDetails,
+                            result.SkippedNotInUpdateList,
+                            result.SkippedDueToBlacklist
+                        };
+
                         _progressTracker.SetProgress(operationId, 100, "Completed", "Update process completed.");
                     }
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, "An error occurred during the update process for operationId: {OperationId}", operationId);
                         _progressTracker.SetProgress(operationId, 100, "Failed", "An error occurred during the update process.");
+                        _updateResults[operationId] = new { Error = "An error occurred during the update process." };
                     }
                 });
 
@@ -263,14 +277,36 @@ namespace NerdHub.Controllers
         [ProducesResponseType(404)] // Not Found
         public IActionResult GetUpdateProgress(string operationId)
         {
-            if (!_progressTracker.TryGetProgress(operationId, out var progressInfo))
+            if (!_progressTracker.TryGetProgress(operationId, out var progressInfo) || progressInfo == null)
             {
                 _logger.LogWarning("Progress not found for operationId: {OperationId}", operationId);
                 return NotFound(new { message = "Operation not found." });
             }
 
             _logger.LogInformation("Returning progress for operationId: {OperationId} - {ProgressInfo}", operationId, progressInfo);
+            if (progressInfo.Phase == "Rate Limited")
+            {
+                return Ok(new {
+                    progress = progressInfo.Progress,
+                    phase = progressInfo.Phase,
+                    message = progressInfo.Message,
+                    retryAfterSeconds = progressInfo.RetryAfterSeconds
+                });
+            }
+
             return Ok(progressInfo);
+        }
+
+        [HttpGet("update-result/{operationId}")]
+        [ProducesResponseType(200)]
+        [ProducesResponseType(404)]
+        public IActionResult GetUpdateResult(string operationId)
+        {
+            if (_updateResults.TryGetValue(operationId, out var result))
+            {
+                return Ok(result);
+            }
+            return NotFound(new { message = "Result not found for this operation." });
         }
     }
 }
