@@ -11,6 +11,7 @@ DotNetEnv.Env.Load();
 // Override configuration with .env values
 builder.Configuration["MongoDB:ConnectionString"] = Environment.GetEnvironmentVariable("MONGODB_CONNECTION_STRING");
 builder.Configuration["Steam:ApiKey"] = Environment.GetEnvironmentVariable("STEAM_API_KEY");
+builder.Configuration["Version"] = Environment.GetEnvironmentVariable("VERSION");
 
 // Add services to the container.
 builder.Services.AddControllers();
