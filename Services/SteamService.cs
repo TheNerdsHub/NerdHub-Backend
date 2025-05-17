@@ -598,14 +598,45 @@ namespace NerdHub.Services
 
                             if (priceOverview != null)
                             {
-                                var update = Builders<GameDetails>.Update
-                                    .Set("priceOverview", priceOverview)
-                                    .Set("LastModifiedTime", DateTime.UtcNow.ToString("o"));
-
+                                // Fetch the current priceOverview from the database
                                 var filter = Builders<GameDetails>.Filter.Eq(g => g.appid, int.Parse(appIdStr));
-                                writeModels.Add(new UpdateOneModel<GameDetails>(filter, update));
-                                result.UpdatedGamesCount++;
-                                result.UpdatedAppIds.Add(int.Parse(appIdStr));
+                                var existingGame = await _games.Find(filter).FirstOrDefaultAsync();
+
+                                bool shouldUpdate = false;
+                                if (existingGame == null || existingGame.priceOverview == null)
+                                {
+                                    shouldUpdate = true;
+                                }
+                                else
+                                {
+                                    // Compare the important fields of priceOverview
+                                    var db = existingGame.priceOverview;
+                                    var incoming = priceOverview;
+                                    if (
+                                        db.discountPercent != incoming.discountPercent ||
+                                        db.initialFormatted != incoming.initialFormatted ||
+                                        db.finalFormatted != incoming.finalFormatted
+                                    )
+                                    {
+                                        shouldUpdate = true;
+                                    }
+                                }
+
+                                if (shouldUpdate)
+                                {
+                                    var update = Builders<GameDetails>.Update
+                                        .Set("priceOverview", priceOverview)
+                                        .Set("LastModifiedTime", DateTime.UtcNow.ToString("o"));
+
+                                    writeModels.Add(new UpdateOneModel<GameDetails>(filter, update));
+                                    result.UpdatedGamesCount++;
+                                    result.UpdatedAppIds.Add(int.Parse(appIdStr));
+                                }
+                                else
+                                {
+                                    result.SkippedGamesCount++;
+                                    result.SkippedAppIds.Add(int.Parse(appIdStr));
+                                }
                             }
                             else
                             {
