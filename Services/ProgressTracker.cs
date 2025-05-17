@@ -1,10 +1,6 @@
 using System.Collections.Concurrent;
-
-public interface IProgressTracker
-{
-    void SetProgress(string operationId, int progress, string phase, string message);
-    bool TryGetProgress(string operationId, out ProgressInfo? progressInfo);
-}
+using NerdHub.Services.Interfaces;
+using NerdHub.Models;
 
 public class ProgressTracker : IProgressTracker
 {
@@ -24,12 +20,4 @@ public class ProgressTracker : IProgressTracker
     {
         return _progressStore.TryGetValue(operationId, out progressInfo);
     }
-}
-
-public class ProgressInfo
-{
-    public int Progress { get; set; } = 0;
-    public string Phase { get; set; } = string.Empty;
-    public string Message { get; set; } = string.Empty;
-    public double? RetryAfterSeconds { get; set; }
 }

@@ -1,6 +1,7 @@
 using DotNetEnv;
 using MongoDB.Driver;
 using NerdHub.Services;
+using NerdHub.Services.Interfaces;
 
 var builder = WebApplication.CreateBuilder(args);
 

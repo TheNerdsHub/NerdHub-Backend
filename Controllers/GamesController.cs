@@ -2,10 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using MongoDB.Driver;
 using NerdHub.Models;
 using NerdHub.Services;
-using Microsoft.Extensions.Logging;
-using System.Threading.Tasks;
-using System.Collections.Generic;
-using System.Linq;
+using NerdHub.Services.Interfaces;
 
 namespace NerdHub.Controllers
 {

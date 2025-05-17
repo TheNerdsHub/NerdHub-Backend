@@ -1,9 +1,7 @@
 using NerdHub.Models;
 using MongoDB.Driver;
 using Newtonsoft.Json;
-using Microsoft.Extensions.Logging;
-using System.Threading;
-using System.Linq;
+using NerdHub.Services.Interfaces;
 
 namespace NerdHub.Services
 {
