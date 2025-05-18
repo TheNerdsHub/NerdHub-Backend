@@ -33,17 +33,18 @@ namespace NerdHub.Services
             }
         }
 
-        public async Task AddOrUpdateUserMappingAsync(string steamId, string username, string? nickname = null)
+        public async Task AddOrUpdateUserMappingAsync(string steamId, string username, string? nickname = null, string? discordId = null)
         {
             try
             {
-                _logger.LogInformation("Adding or updating user mapping for SteamId: {SteamId}, Username: {Username}, Nickname: {Nickname}", steamId, username, nickname);
+                _logger.LogInformation("Adding or updating user mapping for SteamId: {SteamId}, Username: {Username}, Nickname: {Nickname}, DiscordId: {DiscordId}", steamId, username, nickname, discordId);
                 var filter = Builders<UserMapping>.Filter.Eq(mapping => mapping.SteamId, steamId);
                 var update = Builders<UserMapping>.Update
                     .Set(mapping => mapping.Username, username)
-                    .Set(mapping => mapping.Nickname, nickname); // Update nickname if provided
+                    .Set(mapping => mapping.Nickname, nickname)
+                    .Set(mapping => mapping.DiscordId, discordId);
                 await _userMappings.UpdateOneAsync(filter, update, new UpdateOptions { IsUpsert = true });
-                _logger.LogInformation("Successfully added or updated user mapping for SteamId: {SteamId}", steamId);
+                _logger.LogInformation("From Service: Successfully added or updated user mapping for SteamId: {SteamId}", steamId);
             }
             catch (Exception ex)
             {

@@ -14,5 +14,8 @@ namespace NerdHub.Models
 
         [BsonElement("nickname")]
         public string? Nickname { get; set; } // Optional nickname
+
+        [BsonElement("discordId")]
+        public string? DiscordId { get; set; } // Optional Discord ID
     }
 }

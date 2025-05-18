@@ -234,9 +234,14 @@ namespace NerdHub.Controllers
             try
             {
                 _logger.LogInformation("Received request to add or update user mapping for SteamId: {SteamId}", userMapping.SteamId);
-                await _userMappingService.AddOrUpdateUserMappingAsync(userMapping.SteamId, userMapping.Username, userMapping.Nickname);
-                _logger.LogInformation("Successfully added or updated user mapping for SteamId: {SteamId}", userMapping.SteamId);
-                return Ok($"User mapping for SteamId {userMapping.SteamId} updated successfully.");
+                await _userMappingService.AddOrUpdateUserMappingAsync(
+                    userMapping.SteamId, 
+                    userMapping.Username, 
+                    userMapping.Nickname, 
+                    userMapping.DiscordId
+                );
+                _logger.LogInformation("From Controller: Successfully added or updated user mapping for SteamId: {SteamId}", userMapping.SteamId);
+                return Ok(new { message = $"User mapping for SteamId {userMapping.SteamId} updated successfully." });
             }
             catch (Exception ex)
             {
@@ -258,7 +263,8 @@ namespace NerdHub.Controllers
                 {
                     SteamId = mapping.SteamId,
                     Username = mapping.Username,
-                    Nickname = mapping.Nickname
+                    Nickname = mapping.Nickname,
+                    DiscordId = mapping.DiscordId
                 }).ToList();
                 return Ok(response);
             }
