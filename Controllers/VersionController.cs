@@ -94,5 +94,17 @@ namespace NerdHub.Controllers
                 return StatusCode(500, "An error occurred while fetching version info.");
             }
         }
+
+        [HttpGet("health")]
+        [ProducesResponseType(200)]
+        public IActionResult GetHealth()
+        {
+            return Ok(new { 
+                status = "Healthy", 
+                timestamp = DateTime.UtcNow,
+                service = "NerdHub-Backend",
+                version = _configuration["Version"]
+            });
+        }
     }
 }
