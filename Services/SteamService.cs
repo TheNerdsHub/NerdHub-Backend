@@ -549,7 +549,7 @@ namespace NerdHub.Services
             var allGames = await _games.Find(_ => true).Project(g => new { g.appid }).ToListAsync();
             var allAppIds = allGames.Select(g => g.appid).ToList();
 
-            int batchSize = 500;
+            int batchSize = 420;
             int totalBatches = (int)Math.Ceiling(allAppIds.Count / (double)batchSize);
             int processed = 0;
 
