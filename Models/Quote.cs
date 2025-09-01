@@ -1,7 +1,7 @@
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Attributes;
 
-namespace NerdHub.Models
+namespace NerdHub_Backend.Models
 {
     public class Quote
     {
@@ -23,6 +23,9 @@ namespace NerdHub.Models
         
         [BsonElement("channelId")]
         public string ChannelId { get; set; } = string.Empty;
+        
+        [BsonElement("channelName")]
+        public string ChannelName { get; set; } = string.Empty;
         
         [BsonElement("messageId")]
         public string MessageId { get; set; } = string.Empty;

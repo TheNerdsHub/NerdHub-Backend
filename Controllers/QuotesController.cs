@@ -1,8 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
 using MongoDB.Driver;
-using NerdHub.Models;
+using NerdHub_Backend.Models;
 
-namespace NerdHub.Controllers
+namespace NerdHub_Backend.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
