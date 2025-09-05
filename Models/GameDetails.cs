@@ -153,6 +153,9 @@ namespace NerdHub.Models
         [JsonProperty("owned_by")]
         public OwnedBy? ownedBy { get; set; } = new OwnedBy();
 
+        [JsonProperty("playtime_by_user")]
+        public Dictionary<string, UserPlaytimeData>? PlaytimeByUser { get; set; }
+
         [BsonIgnore]
         [JsonProperty("playtime_2weeks")]
         public int? playtime_2weeks { get; set; }
@@ -184,6 +187,41 @@ namespace NerdHub.Models
         [BsonIgnore]
         [JsonProperty("playtime_disconnected")]
         public int? playtime_disconnected { get; set; }
+
+        // Helper properties for aggregated playtime data
+        [BsonIgnore]
+        [JsonProperty("total_playtime_minutes")]
+        public int TotalPlaytimeMinutes => PlaytimeByUser?.Values.Sum(p => p.playtime_forever) ?? 0;
+
+        [BsonIgnore]
+        [JsonProperty("total_playtime_formatted")]
+        public string TotalPlaytimeFormatted => FormatPlaytime(TotalPlaytimeMinutes);
+        
+        [BsonIgnore]
+        [JsonProperty("last_played_date")]
+        public DateTime? LastPlayedDate => PlaytimeByUser?.Values
+            .Where(p => p.rtime_last_played > 0)
+            .Max(p => (int?)p.rtime_last_played) is int lastPlayed && lastPlayed > 0
+            ? DateTimeOffset.FromUnixTimeSeconds(lastPlayed).DateTime 
+            : null;
+
+        [BsonIgnore]
+        [JsonProperty("last_played_date_formatted")]
+        public string? LastPlayedDateFormatted => LastPlayedDate?.ToLocalTime().ToString("MMM dd, yyyy");
+
+        // Helper method for formatting playtime
+        private static string FormatPlaytime(int minutes)
+        {
+            if (minutes == 0) return "Never played";
+            
+            var hours = minutes / 60;
+            var remainingMinutes = minutes % 60;
+            
+            if (hours == 0) return $"{remainingMinutes}m";
+            if (remainingMinutes == 0) return $"{hours}h";
+            
+            return $"{hours}h {remainingMinutes}m";
+        }
     }
 
     public class OwnedBy
@@ -479,5 +517,44 @@ namespace NerdHub.Models
 
         [JsonProperty("descriptors")]
         public string? descriptors { get; set; }
+    }
+
+    public class UserPlaytimeData
+    {
+        [JsonProperty("playtime_forever")]
+        public int playtime_forever { get; set; } // in minutes
+
+        [JsonProperty("playtime_windows_forever")]
+        public int playtime_windows_forever { get; set; }
+
+        [JsonProperty("playtime_mac_forever")]
+        public int playtime_mac_forever { get; set; }
+
+        [JsonProperty("playtime_linux_forever")]
+        public int playtime_linux_forever { get; set; }
+
+        [JsonProperty("playtime_deck_forever")]
+        public int playtime_deck_forever { get; set; }
+
+        [JsonProperty("rtime_last_played")]
+        public int rtime_last_played { get; set; }
+
+        [JsonProperty("playtime_disconnected")]
+        public int playtime_disconnected { get; set; }
+
+        // Helper properties for frontend        
+
+        private static string FormatPlaytime(int minutes)
+        {
+            if (minutes == 0) return "Never played";
+            
+            var hours = minutes / 60;
+            var remainingMinutes = minutes % 60;
+            
+            if (hours == 0) return $"{remainingMinutes}m";
+            if (remainingMinutes == 0) return $"{hours}h";
+            
+            return $"{hours}h {remainingMinutes}m";
+        }
     }
 }

@@ -235,6 +235,7 @@ namespace NerdHub.Services
 
             var writeModels = new List<WriteModel<GameDetails>>();
             var steamOwnedGames = new Dictionary<string, List<int>>();
+            var steamPlaytimeData = new Dictionary<string, Dictionary<int, UserPlaytimeData>>();
             var fetchedGameDetailsCache = new Dictionary<int, GameDetails>();
 
             try
@@ -244,7 +245,7 @@ namespace NerdHub.Services
                 int processedSteamIds = 0;
                 foreach (var steamId in steamIdList)
                 {
-                    var url = $"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={steamApiKey}&steamid={steamId}&format=json";
+                    var url = $"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={steamApiKey}&steamid={steamId}&format=json&include_played_free_games=1";
                     var response = await FetchWithRetryAndRateLimitAsync(httpClient, url, operationId);
 
                     var apiResponse = JsonConvert.DeserializeObject<SteamApiResponse>(response, new JsonSerializerSettings
@@ -259,12 +260,31 @@ namespace NerdHub.Services
                             .Where(g => g.appid != null)
                             .Select(g => g.appid!.Value)
                             .ToList();
-                        _logger.LogInformation("Successfully fetched owned games for Steam ID {SteamId}.", steamId);
+
+                        // Store playtime data for each game
+                        steamPlaytimeData[steamId] = apiResponse.response.games
+                            .Where(g => g.appid != null)
+                            .ToDictionary(
+                                g => g.appid!.Value,
+                                g => new UserPlaytimeData
+                                {
+                                    playtime_forever = g.playtime_forever ?? 0,
+                                    playtime_windows_forever = g.playtime_windows_forever ?? 0,
+                                    playtime_mac_forever = g.playtime_mac_forever ?? 0,
+                                    playtime_linux_forever = g.playtime_linux_forever ?? 0,
+                                    playtime_deck_forever = g.playtime_deck_forever ?? 0,
+                                    rtime_last_played = g.rtime_last_played ?? 0,
+                                    playtime_disconnected = g.playtime_disconnected ?? 0
+                                }
+                            );
+
+                        _logger.LogInformation("Successfully fetched {Count} games with playtime for Steam ID {SteamId}.", steamOwnedGames[steamId].Count, steamId);
                     }
                     else
                     {
                         _logger.LogWarning("No games found for Steam ID {SteamId}.", steamId);
                         steamOwnedGames[steamId] = new List<int>();
+                        steamPlaytimeData[steamId] = new Dictionary<int, UserPlaytimeData>();
                     }
 
                     processedSteamIds++;
@@ -332,6 +352,11 @@ namespace NerdHub.Services
                                     existingGame.ownedBy.steamId = new List<string>();
                                 }
 
+                                if (existingGame.PlaytimeByUser == null)
+                                {
+                                    existingGame.PlaytimeByUser = new Dictionary<string, UserPlaytimeData>();
+                                }
+
                                 bool changesMade = false;
                                 foreach (var dictionarySteamId in steamOwnedGames.Keys)
                                 {
@@ -340,6 +365,14 @@ namespace NerdHub.Services
                                         if (!existingGame.ownedBy.steamId.Contains(dictionarySteamId))
                                         {
                                             existingGame.ownedBy.steamId.Add(dictionarySteamId);
+                                            changesMade = true;
+                                        }
+
+                                        // Update playtime data for this specific user
+                                        if (steamPlaytimeData.ContainsKey(dictionarySteamId) && 
+                                            steamPlaytimeData[dictionarySteamId].ContainsKey(appId))
+                                        {
+                                            existingGame.PlaytimeByUser[dictionarySteamId] = steamPlaytimeData[dictionarySteamId][appId];
                                             changesMade = true;
                                         }
                                     }
@@ -412,6 +445,11 @@ namespace NerdHub.Services
                                     fetchedGameDetails.ownedBy.steamId = new List<string>();
                                 }
 
+                                if (fetchedGameDetails.PlaytimeByUser == null)
+                                {
+                                    fetchedGameDetails.PlaytimeByUser = new Dictionary<string, UserPlaytimeData>();
+                                }
+
                                 foreach (var dictionarySteamId in steamOwnedGames.Keys)
                                 {
                                     if (steamOwnedGames[dictionarySteamId].Contains(appId))
@@ -420,6 +458,13 @@ namespace NerdHub.Services
                                         {
                                             fetchedGameDetails.ownedBy.steamId.Add(dictionarySteamId);
                                             _logger.LogInformation("Added Steam ID {SteamId} to the ownedBy list for AppID {AppId}.", dictionarySteamId, appId);
+                                        }
+
+                                        // Add playtime data for this specific user
+                                        if (steamPlaytimeData.ContainsKey(dictionarySteamId) && 
+                                            steamPlaytimeData[dictionarySteamId].ContainsKey(appId))
+                                        {
+                                            fetchedGameDetails.PlaytimeByUser[dictionarySteamId] = steamPlaytimeData[dictionarySteamId][appId];
                                         }
                                     }
                                     else
