@@ -346,5 +346,43 @@ namespace NerdHub.Controllers
                 return StatusCode(500, "An error occurred while starting the price update process.");
             }
         }
+
+        [HttpGet("{appId}/playtime")]
+        [ProducesResponseType(200)]
+        [ProducesResponseType(404)]
+        [ProducesResponseType(500)]
+        public async Task<IActionResult> GetGamePlaytime(int appId)
+        {
+            try
+            {
+                _logger.LogInformation("Received request to get playtime data for game with AppID {AppId}.", appId);
+
+                var game = await _steamService.GetGameByIdAsync(appId);
+                if (game == null)
+                {
+                    _logger.LogWarning("Game with AppID {AppId} not found.", appId);
+                    return NotFound("Game not found");
+                }
+
+                var playtimeResponse = new
+                {
+                    appId = game.appid,
+                    name = game.name,
+                    total_playtime_minutes = game.TotalPlaytimeMinutes,
+                    total_playtime_formatted = game.TotalPlaytimeFormatted,
+                    last_played_date = game.LastPlayedDate,
+                    last_played_date_formatted = game.LastPlayedDateFormatted,
+                    playtime_by_user = game.PlaytimeByUser
+                };
+
+                _logger.LogInformation("Successfully retrieved playtime data for AppID {AppId}.", appId);
+                return Ok(playtimeResponse);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred while retrieving playtime data for AppID {AppId}.", appId);
+                return StatusCode(500, "An error occurred while retrieving playtime data.");
+            }
+        }
     }
 }
