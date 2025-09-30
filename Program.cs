@@ -13,6 +13,7 @@ DotNetEnv.Env.Load();
 builder.Configuration["MongoDB:ConnectionString"] = Environment.GetEnvironmentVariable("MONGODB_CONNECTION_STRING");
 builder.Configuration["Steam:ApiKey"] = Environment.GetEnvironmentVariable("STEAM_API_KEY");
 builder.Configuration["Version"] = Environment.GetEnvironmentVariable("VERSION");
+builder.Configuration["Cors:Origins"] = Environment.GetEnvironmentVariable("CORS_ORIGINS");
 
 // Add services to the container.
 builder.Services.AddControllers();
@@ -45,9 +46,16 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins("http://localhost:3000", "http://localhost:5173")
+        // Get CORS origins from environment variable, fallback to default dev origins
+        var corsOrigins = builder.Configuration["Cors:Origins"];
+        var allowedOrigins = !string.IsNullOrEmpty(corsOrigins) 
+            ? corsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(o => o.Trim()).ToArray()
+            : new[] { "http://localhost:3000", "http://localhost:5173" };
+            
+        policy.WithOrigins(allowedOrigins)
               .AllowAnyHeader()
-              .AllowAnyMethod();
+              .AllowAnyMethod()
+              .AllowCredentials(); // Allow credentials for authentication
     });
 });
 
