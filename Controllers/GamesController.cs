@@ -315,8 +315,14 @@ namespace NerdHub.Controllers
         [HttpPost("start-price-update")]
         [ProducesResponseType(200)] // OK
         [ProducesResponseType(500)] // Internal Server Error
-        public IActionResult StartPriceUpdate()
+        public IActionResult StartPriceUpdate([FromQuery] int batchSize = 400)
         {
+            // Validate batch size range
+            if (batchSize < 1 || batchSize > 500)
+            {
+                return BadRequest("Batch size must be between 1 and 500.");
+            }
+
             try
             {
                 var operationId = Guid.NewGuid().ToString();
@@ -326,7 +332,7 @@ namespace NerdHub.Controllers
                 {
                     try
                     {
-                        var result = await _steamService.UpdateAllGamePricesAsync(operationId);
+                        var result = await _steamService.UpdateAllGamePricesAsync(operationId, batchSize);
                         _progressTracker.SetProgress(operationId, 100, "Completed", "Price update process completed.");
                         _updateResults[operationId] = result;
                     }
