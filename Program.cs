@@ -10,10 +10,10 @@ var builder = WebApplication.CreateBuilder(args);
 DotNetEnv.Env.Load();
 
 // Override configuration with .env values
-builder.Configuration["MongoDB:ConnectionString"] = Environment.GetEnvironmentVariable("MONGODB_CONNECTION_STRING");
-builder.Configuration["Steam:ApiKey"] = Environment.GetEnvironmentVariable("STEAM_API_KEY");
+builder.Configuration["MongoDB:ConnectionString"] = Environment.GetEnvironmentVariable("BACKEND_MONGO_URI");
+builder.Configuration["Steam:ApiKey"] = Environment.GetEnvironmentVariable("BACKEND_STEAM_API_KEY");
 builder.Configuration["Version"] = Environment.GetEnvironmentVariable("VERSION");
-builder.Configuration["Cors:Origins"] = Environment.GetEnvironmentVariable("CORS_ORIGINS");
+builder.Configuration["Cors:Origins"] = Environment.GetEnvironmentVariable("BACKEND_CORS_ORIGINS");
 
 // Add services to the container.
 builder.Services.AddControllers();
