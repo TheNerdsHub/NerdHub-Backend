@@ -29,8 +29,9 @@ This repository contains the .NET 8 backend for the NerdHub application. It serv
 1.  Create a `.env` file in the root of the project.
 2.  Add the following environment variables to the `.env` file:
     ```
-    MONGODB_CONNECTION_STRING="your-mongo-connection-string"
-    STEAM_API_KEY="your-steam-api-key"
+    BACKEND_MONGO_URI="mongodb://root:root@localhost:27017/"
+    BACKEND_STEAM_API_KEY="your-steam-api-key"
+    BACKEND_CORS_ORIGINS="http://localhost:3000,http://localhost:5173"
     VERSION="dev-prerelease"
     ```
 
